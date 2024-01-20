@@ -304,6 +304,7 @@ dependencies = [
  "embassy-rp",
  "embassy-sync",
  "embassy-time",
+ "embedded-hal-async",
  "fixed",
  "fixed-macro",
  "heapless",
