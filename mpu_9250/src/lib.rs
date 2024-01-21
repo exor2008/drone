@@ -11,7 +11,7 @@ pub const DEV_ADDR: u8 = 0x68;
 
 #[allow(async_fn_in_trait)]
 pub trait SensorAsync {
-    type Measurements;
+    type Measurements: Accelerometer + Gyro + Magnetometer + Barometer;
     async fn measure(&mut self) -> Result<Self::Measurements, Error>;
 }
 pub trait Accelerometer {
@@ -19,7 +19,7 @@ pub trait Accelerometer {
 }
 
 pub trait Gyro {
-    fn gyro(&self) -> F32x3;
+    fn gyro(&self) -> I16x3;
 }
 
 pub trait Magnetometer {
@@ -69,43 +69,75 @@ impl<'d, T> SensorAsync for Mpu9250<'d, T, i2c::Async>
 where
     T: Instance,
 {
-    type Measurements = impl Accelerometer + Gyro + Magnetometer + Barometer;
+    type Measurements = Mpu9250Measurement;
     async fn measure(&mut self) -> Result<Self::Measurements, Error> {
         let mut acc = [0u8; 6];
 
-        // X low
+        // Acc X low
         self.i2c
             .write_read(DEV_ADDR, &[0x3C], &mut acc[0..1])
             .await?;
 
-        // X heigh
+        // Acc X heigh
         self.i2c
             .write_read(DEV_ADDR, &[0x3B], &mut acc[1..2])
             .await?;
 
-        // Y low
+        // Acc Y low
         self.i2c
             .write_read(DEV_ADDR, &[0x3E], &mut acc[2..3])
             .await?;
 
-        // Y heigh
+        // Acc Y heigh
         self.i2c
             .write_read(DEV_ADDR, &[0x3D], &mut acc[3..4])
             .await?;
 
-        // Z low
+        // Acc Z low
         self.i2c
             .write_read(DEV_ADDR, &[0x40], &mut acc[4..5])
             .await?;
 
-        // Z heigh
+        // Acc Z heigh
         self.i2c
             .write_read(DEV_ADDR, &[0x3F], &mut acc[5..6])
             .await?;
 
+        let mut gyro = [0u8; 6];
+
+        // Gyro X low
+        self.i2c
+            .write_read(DEV_ADDR, &[0x44], &mut gyro[0..1])
+            .await?;
+
+        // Gyro X heigh
+        self.i2c
+            .write_read(DEV_ADDR, &[0x43], &mut gyro[1..2])
+            .await?;
+
+        // Gyro Y low
+        self.i2c
+            .write_read(DEV_ADDR, &[0x46], &mut gyro[2..3])
+            .await?;
+
+        // Gyro Y heigh
+        self.i2c
+            .write_read(DEV_ADDR, &[0x45], &mut gyro[3..4])
+            .await?;
+
+        // Gyro Z low
+        self.i2c
+            .write_read(DEV_ADDR, &[0x48], &mut gyro[4..5])
+            .await?;
+
+        // Gyro Z heigh
+        self.i2c
+            .write_read(DEV_ADDR, &[0x47], &mut gyro[5..6])
+            .await?;
+
         Ok(Mpu9250Measurement {
             acc,
-            gyro: F32x3::default(),
+            gyro,
             mag: F32x3::default(),
             baro: 0.0,
         })
@@ -113,9 +145,9 @@ where
 }
 
 #[derive(Default)]
-struct Mpu9250Measurement {
+pub struct Mpu9250Measurement {
     acc: [u8; 6],
-    gyro: F32x3,
+    gyro: [u8; 6],
     mag: F32x3,
     baro: f32,
 }
@@ -130,8 +162,11 @@ impl Accelerometer for Mpu9250Measurement {
 }
 
 impl Gyro for Mpu9250Measurement {
-    fn gyro(&self) -> F32x3 {
-        self.gyro
+    fn gyro(&self) -> I16x3 {
+        let x_gyro = i16::from_le_bytes([self.gyro[0], self.gyro[1]]);
+        let y_gyro = i16::from_le_bytes([self.gyro[2], self.gyro[3]]);
+        let z_gyro = i16::from_le_bytes([self.gyro[4], self.gyro[5]]);
+        I16x3::from((x_gyro, y_gyro, z_gyro))
     }
 }
 

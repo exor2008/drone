@@ -11,7 +11,7 @@ use embassy_rp::bind_interrupts;
 use embassy_rp::i2c::{self, Async, Config, InterruptHandler};
 use embassy_rp::peripherals::I2C0;
 use embassy_time::{Duration, Ticker};
-use mpu_9250::{Accelerometer, Barometer, Magnetometer, Mpu9250, SensorAsync};
+use mpu_9250::{Accelerometer, Barometer, Gyro, Magnetometer, Mpu9250, SensorAsync};
 use panic_probe as _;
 
 bind_interrupts!(struct Irqs {
