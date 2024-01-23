@@ -3,21 +3,22 @@
 #![feature(impl_trait_in_assoc_type)]
 #![allow(async_fn_in_trait)]
 
-use defmt::*;
 use embassy_rp::i2c::{self, Error, Instance, Mode};
-use embassy_time::Timer;
 use embedded_hal_async::i2c::I2c;
-use micromath::vector::I16x3;
+use micromath::vector::{F32x3, I16x3};
+
+mod register;
+use register::*;
 
 pub const ACC_ADDR: u8 = 0x68;
 pub const MAG_ADDR: u8 = 0x0C;
 
 pub trait Accelerometer {
-    async fn acc(&mut self) -> Result<I16x3, Error>;
+    async fn acc(&mut self) -> Result<F32x3, Error>;
 }
 
 pub trait Gyro {
-    async fn gyro(&mut self) -> Result<I16x3, Error>;
+    async fn gyro(&mut self) -> Result<F32x3, Error>;
 }
 
 pub trait Magnetometer {
@@ -34,6 +35,8 @@ where
     M: Mode,
 {
     i2c: i2c::I2c<'d, T, M>,
+    gyro_range: GyroRange,
+    acc_range: AccelRange,
 }
 
 impl<'d, T> Mpu9250<'d, T, i2c::Async>
@@ -41,32 +44,35 @@ where
     T: Instance,
 {
     pub fn new_async(i2c: i2c::I2c<'d, T, i2c::Async>) -> Self {
-        Mpu9250 { i2c }
+        Mpu9250 {
+            i2c,
+            gyro_range: GyroRange::default(),
+            acc_range: AccelRange::default(),
+        }
     }
 
     pub async fn init(&mut self) -> Result<(), Error> {
-        // Sleep off
-        self.write(ACC_ADDR, &[0x6B, 0x01]).await?;
-
-        // Sample Rate Divider. Typical values:0x07(125Hz) 1KHz internal sample rate
-        self.write(ACC_ADDR, &[0x19, 0x07]).await?;
+        // Reset
+        self.write(
+            ACC_ADDR,
+            &[Mpu9250Reg::PwrMgmt1.addr(), RegPwrMgmt1::Hreset.mask()],
+        )
+        .await?;
 
         // Low pass filter 5 Hz
-        self.write(ACC_ADDR, &[0x1A, 0x06]).await?;
+        self.set_low_pass_filter(GyroDlpf::Hz5).await?;
 
         // Gyro Full Scale Select. Typical values:0x10(1000dps)
-        self.write(ACC_ADDR, &[0x1B, 0x10]).await?;
+        self.set_gyro_range(self.gyro_range).await?;
 
-        // Accel Full Scale Select. Typical values:0x01(2g)
-        self.write(ACC_ADDR, &[0x1C, 0x00]).await?;
+        // Accel Full Scale Select. Typical values:0x02(4g)
+        self.set_accel_range(self.acc_range).await?;
 
         // Bypass mode
-        self.write(ACC_ADDR, &[0x37, 0x02]).await?;
-        Timer::after_millis(10).await;
+        self.enable_bypass().await?;
 
         // Single measurement mode
         self.write(MAG_ADDR, &[0x0A, 0x06]).await?;
-        Timer::after_millis(10).await;
 
         Ok(())
     }
@@ -87,37 +93,94 @@ where
     pub async fn write(&mut self, addr: u8, data: &[u8]) -> Result<(), Error> {
         Ok(self.i2c.write(addr, data).await?)
     }
+
+    pub async fn set_sample_rate(&mut self, rate: u16) -> Result<(), Error> {
+        if rate > 1000 || rate < 4 {
+            panic!("Error: Invalid sample rate.");
+        }
+
+        // Derived from: Sample Rate = Internal Sample Rate / (1 + SMPLRT_DIV)
+        let smplrt_div = (1000 / rate) as u8 - 1;
+        self.i2c
+            .write(ACC_ADDR, &[Mpu9250Reg::SmplrtDiv.addr(), smplrt_div])
+            .await?;
+        Ok(())
+    }
+
+    pub async fn enable_bypass(&mut self) -> Result<(), Error> {
+        //Reset gyro
+        self.write(ACC_ADDR, &[Mpu9250Reg::UserCtrl.addr(), 0])
+            .await?;
+
+        // Enable bypass
+        self.write(
+            ACC_ADDR,
+            &[
+                Mpu9250Reg::IntPinCfg.addr(),
+                RegIntPinCfg::Actl.mask() | RegIntPinCfg::BypassEn.mask(),
+            ],
+        )
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn set_low_pass_filter(&mut self, level: GyroDlpf) -> Result<(), Error> {
+        self.write(ACC_ADDR, &[Mpu9250Reg::Config.addr(), level as u8])
+            .await?;
+        Ok(())
+    }
+
+    pub async fn set_accel_range(&mut self, acc_range: AccelRange) -> Result<(), Error> {
+        let accel_config_byte: u8 = match acc_range {
+            AccelRange::G2 => 0,
+            AccelRange::G4 => 1,
+            AccelRange::G8 => 2,
+            AccelRange::G16 => 3,
+        } << 3;
+        self.write(
+            ACC_ADDR,
+            &[Mpu9250Reg::AccelConfig.addr(), accel_config_byte],
+        )
+        .await?;
+        self.acc_range = acc_range;
+        Ok(())
+    }
+
+    pub async fn set_gyro_range(&mut self, gyro_range: GyroRange) -> Result<(), Error> {
+        let gyro_config_byte: u8 = match gyro_range {
+            GyroRange::Dps250 => 0,
+            GyroRange::Dps500 => 1,
+            GyroRange::Dps1000 => 2,
+            GyroRange::Dps2000 => 3,
+        } << 3;
+        self.write(ACC_ADDR, &[Mpu9250Reg::GyroConfig.addr(), gyro_config_byte])
+            .await?;
+        self.gyro_range = gyro_range;
+        Ok(())
+    }
 }
 
 impl<'d, T> Accelerometer for Mpu9250<'d, T, i2c::Async>
 where
     T: Instance,
 {
-    async fn acc(&mut self) -> Result<I16x3, Error> {
+    async fn acc(&mut self) -> Result<F32x3, Error> {
         let mut acc = [0u8; 6];
 
-        // Acc X low
-        self.read(ACC_ADDR, &[0x3C], &mut acc[0..1]).await?;
+        self.read(ACC_ADDR, &[Mpu9250Reg::AccelXoutH.addr()], &mut acc)
+            .await?;
 
-        // Acc X heigh
-        self.read(ACC_ADDR, &[0x3B], &mut acc[1..2]).await?;
+        let sensetivity = self.acc_range.get_sensitivity_mss();
+        let x_acc = i16::from_be_bytes(acc[0..2].try_into().expect("Slice with incorrect length"));
+        let y_acc = i16::from_be_bytes(acc[2..4].try_into().expect("Slice with incorrect length"));
+        let z_acc = i16::from_be_bytes(acc[4..6].try_into().expect("Slice with incorrect length"));
 
-        // Acc Y low
-        self.read(ACC_ADDR, &[0x3E], &mut acc[2..3]).await?;
+        let x_acc = sensetivity * x_acc as f32;
+        let y_acc = sensetivity * y_acc as f32;
+        let z_acc = sensetivity * z_acc as f32;
 
-        // Acc Y heigh
-        self.read(ACC_ADDR, &[0x3D], &mut acc[3..4]).await?;
-
-        // Acc Z low
-        self.read(ACC_ADDR, &[0x40], &mut acc[4..5]).await?;
-
-        // Acc Z heigh
-        self.read(ACC_ADDR, &[0x3F], &mut acc[5..6]).await?;
-
-        let x_acc = i16::from_le_bytes([acc[0], acc[1]]);
-        let y_acc = i16::from_le_bytes([acc[2], acc[3]]);
-        let z_acc = i16::from_le_bytes([acc[4], acc[5]]);
-        Ok(I16x3::from((x_acc, y_acc, z_acc)))
+        Ok(F32x3::from((x_acc, y_acc, z_acc)))
     }
 }
 
@@ -125,31 +188,26 @@ impl<'d, T> Gyro for Mpu9250<'d, T, i2c::Async>
 where
     T: Instance,
 {
-    async fn gyro(&mut self) -> Result<I16x3, Error> {
+    async fn gyro(&mut self) -> Result<F32x3, Error> {
         let mut gyro = [0u8; 6];
 
         // Gyro X low
-        self.read(ACC_ADDR, &[0x44], &mut gyro[0..1]).await?;
+        self.read(ACC_ADDR, &[Mpu9250Reg::GyroConfigXoutH.addr()], &mut gyro)
+            .await?;
 
-        // Gyro X heigh
-        self.read(ACC_ADDR, &[0x43], &mut gyro[1..2]).await?;
+        let dps = self.gyro_range.get_dps();
+        let x_gyro =
+            i16::from_be_bytes(gyro[0..2].try_into().expect("Slice with incorrect length"));
+        let y_gyro =
+            i16::from_be_bytes(gyro[2..4].try_into().expect("Slice with incorrect length"));
+        let z_gyro =
+            i16::from_be_bytes(gyro[4..6].try_into().expect("Slice with incorrect length"));
 
-        // Gyro Y low
-        self.read(ACC_ADDR, &[0x46], &mut gyro[2..3]).await?;
+        let x_gyro = dps * x_gyro as f32;
+        let y_gyro = dps * y_gyro as f32;
+        let z_gyro = dps * z_gyro as f32;
 
-        // Gyro Y heigh
-        self.read(ACC_ADDR, &[0x45], &mut gyro[3..4]).await?;
-
-        // Gyro Z low
-        self.read(ACC_ADDR, &[0x48], &mut gyro[4..5]).await?;
-
-        // Gyro Z heigh
-        self.read(ACC_ADDR, &[0x47], &mut gyro[5..6]).await?;
-
-        let x_gyro = i16::from_le_bytes([gyro[0], gyro[1]]);
-        let y_gyro = i16::from_le_bytes([gyro[2], gyro[3]]);
-        let z_gyro = i16::from_le_bytes([gyro[4], gyro[5]]);
-        Ok(I16x3::from((x_gyro, y_gyro, z_gyro)))
+        Ok(F32x3::from((x_gyro, y_gyro, z_gyro)))
     }
 }
 
