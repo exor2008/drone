@@ -39,8 +39,6 @@ async fn main(_spawner: Spawner) {
         crate::panic!("IMU Sensor is not MPU 9250");
     }
 
-    mpu_9250.set_sample_rate(125).await.unwrap(); // Hz
-
     let mut ticket = Ticker::every(Duration::from_millis(1));
     loop {
         let acc = mpu_9250.acc().await.unwrap();

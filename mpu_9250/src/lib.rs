@@ -4,6 +4,7 @@
 #![allow(async_fn_in_trait)]
 
 use embassy_rp::i2c::{self, Error, Instance, Mode};
+use embassy_time::Timer;
 use embedded_hal_async::i2c::I2c;
 use micromath::vector::{F32x3, I16x3};
 
@@ -22,7 +23,7 @@ pub trait Gyro {
 }
 
 pub trait Magnetometer {
-    async fn mag(&mut self) -> Result<I16x3, Error>;
+    async fn mag(&mut self) -> Result<F32x3, Error>;
     async fn is_mag_ready(&mut self) -> Result<bool, Error>;
 }
 pub trait Barometer {
@@ -37,6 +38,8 @@ where
     i2c: i2c::I2c<'d, T, M>,
     gyro_range: GyroRange,
     acc_range: AccelRange,
+    mag_factory_adjust: F32x3,
+    mag_sensitivity: Sensitivity,
 }
 
 impl<'d, T> Mpu9250<'d, T, i2c::Async>
@@ -48,6 +51,8 @@ where
             i2c,
             gyro_range: GyroRange::default(),
             acc_range: AccelRange::default(),
+            mag_factory_adjust: F32x3::default(),
+            mag_sensitivity: Sensitivity::default(),
         }
     }
 
@@ -68,11 +73,18 @@ where
         // Accel Full Scale Select. Typical values:0x02(4g)
         self.set_accel_range(self.acc_range).await?;
 
+        // Sample rate 125 Hz
+        self.set_sample_rate(125).await?;
+
         // Bypass mode
         self.enable_bypass().await?;
 
-        // Single measurement mode
-        self.write(MAG_ADDR, &[0x0A, 0x06]).await?;
+        // Get factory sensitivity adjustment values from Fuse ROM.
+        self.mag_factory_adjust = self.read_sensitivity_adjustment().await?;
+
+        // Set magnetometer sensitivity and 100 Hz sample rate
+        self.config_mag(SampleRate::Hz100, Sensitivity::Bit16)
+            .await?;
 
         Ok(())
     }
@@ -159,6 +171,64 @@ where
         self.gyro_range = gyro_range;
         Ok(())
     }
+
+    pub async fn read_sensitivity_adjustment(&mut self) -> Result<F32x3, Error> {
+        // Power down mag before mode switch
+        self.write(
+            MAG_ADDR,
+            &[Ak8963Reg::Cntl1.addr(), RegCntl1::PowerDn.mask()],
+        )
+        .await?;
+        Timer::after_micros(100).await;
+
+        // Enter FUSE ROM mode
+        self.write(
+            MAG_ADDR,
+            &[Ak8963Reg::Cntl1.addr(), RegCntl1::FuseRom.mask()],
+        )
+        .await?;
+        Timer::after_millis(1).await;
+
+        // Read sensitivity values from ROM
+        let mut buf: [u8; 3] = [0u8; 3];
+        self.read(MAG_ADDR, &[Ak8963Reg::Asax.addr()], &mut buf)
+            .await?;
+
+        let factory_adjust = F32x3::from_iter(buf.map(|v| ((v - 128) as f32) / 256.0 + 1.0));
+
+        Ok(factory_adjust)
+    }
+
+    pub async fn config_mag(
+        &mut self,
+        sample_rate: SampleRate,
+        sensitivity: Sensitivity,
+    ) -> Result<(), Error> {
+        let mut cntl1_byte = 0u8;
+
+        match sensitivity {
+            Sensitivity::Bit14 => {}
+            Sensitivity::Bit16 => cntl1_byte |= RegCntl1::Sensitivity16bit.mask(),
+        }
+        self.mag_sensitivity = sensitivity;
+
+        match sample_rate {
+            SampleRate::Hz8 => cntl1_byte |= RegCntl1::ContMeas1.mask(),
+            SampleRate::Hz100 => cntl1_byte |= RegCntl1::ContMeas2.mask(),
+        }
+
+        // Power down mag before mode switch
+        self.write(
+            MAG_ADDR,
+            &[Ak8963Reg::Cntl1.addr(), RegCntl1::PowerDn.mask()],
+        )
+        .await?;
+        Timer::after_micros(100).await;
+
+        self.write(MAG_ADDR, &[Ak8963Reg::Cntl1.addr(), cntl1_byte])
+            .await?;
+        Ok(())
+    }
 }
 
 impl<'d, T> Accelerometer for Mpu9250<'d, T, i2c::Async>
@@ -215,40 +285,32 @@ impl<'d, T> Magnetometer for Mpu9250<'d, T, i2c::Async>
 where
     T: Instance,
 {
-    async fn mag(&mut self) -> Result<I16x3, Error> {
+    async fn mag(&mut self) -> Result<F32x3, Error> {
         let mut mag = [0u8; 6];
 
         // Mag X low
-        self.read(MAG_ADDR, &[0x03], &mut mag[0..1]).await?;
+        self.read(MAG_ADDR, &[0x03], &mut mag).await?;
 
-        // Mag X heigh
-        self.read(MAG_ADDR, &[0x04], &mut mag[1..2]).await?;
-
-        // Mag Y low
-        self.read(MAG_ADDR, &[0x05], &mut mag[2..3]).await?;
-
-        // Mag Y heigh
-        self.read(MAG_ADDR, &[0x06], &mut mag[3..4]).await?;
-
-        // Mag Z low
-        self.read(MAG_ADDR, &[0x07], &mut mag[4..5]).await?;
-
-        // Mag Z heigh
-        self.read(MAG_ADDR, &[0x08], &mut mag[5..6]).await?;
-
-        let x_mag = i16::from_le_bytes([mag[0], mag[1]]);
-        let y_mag = i16::from_le_bytes([mag[2], mag[3]]);
-        let z_mag = i16::from_le_bytes([mag[4], mag[5]]);
+        let x_mag = i16::from_le_bytes(mag[0..2].try_into().expect("Slice with incorrect length"));
+        let y_mag = i16::from_le_bytes(mag[2..4].try_into().expect("Slice with incorrect length"));
+        let z_mag = i16::from_le_bytes(mag[4..6].try_into().expect("Slice with incorrect length"));
 
         // Reading is finished. Requiered to continue reading data.
-        self.read(MAG_ADDR, &[0x09], &mut mag).await?;
+        self.read(MAG_ADDR, &[Ak8963Reg::St2.addr()], &mut mag)
+            .await?;
 
-        Ok(I16x3::from((x_mag, y_mag, z_mag)))
+        let mag_sens = self.mag_sensitivity.get_sensetivity();
+        let measurements = F32x3::from(I16x3::from((x_mag, y_mag, z_mag)));
+
+        Ok(measurements * self.mag_factory_adjust * mag_sens)
     }
 
     async fn is_mag_ready(&mut self) -> Result<bool, Error> {
+        // Check if new measurements are ready to read
+        // [0] - Data ready [1] - Data Overrun
         let mut buffer = [0u8];
-        self.read(MAG_ADDR, &[0x02], &mut buffer).await?;
-        Ok(buffer[0] & 0x1 == 0x1) // [0] - Data ready [1] - Data Overrun
+        self.read(MAG_ADDR, &[Ak8963Reg::St1.addr()], &mut buffer)
+            .await?;
+        Ok(buffer[0] & 0x1 == 0x1)
     }
 }

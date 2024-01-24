@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 pub const G: f32 = 9.80665;
+const MEAS_RANGE: f32 = 4912.0; // UT = micro teslas
 
 #[derive(Clone, Copy)]
 pub enum Mpu9250Reg {
@@ -103,7 +104,7 @@ impl AccelRange {
             AccelRange::G4 => 4.0,
             AccelRange::G8 => 8.0,
             AccelRange::G16 => 16.0,
-        } / i16::MAX as f32;
+        } / (i16::MAX as f32 + 1.0);
     }
 
     // Returns sensitivity in m/s/s.
@@ -116,7 +117,7 @@ impl AccelRange {
             AccelRange::G8 => 8.0,
             AccelRange::G16 => 16.0,
         } * G
-            / i16::MAX as f32;
+            / (i16::MAX as f32 + 1.0);
     }
 }
 
@@ -138,12 +139,74 @@ impl GyroRange {
             GyroRange::Dps500 => 500.0,
             GyroRange::Dps1000 => 1000.0,
             GyroRange::Dps2000 => 2000.0,
-        } / i16::MAX as f32;
+        } / (i16::MAX as f32 + 1.0);
     }
 }
 
 impl Default for GyroRange {
     fn default() -> Self {
         GyroRange::Dps1000
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum Ak8963Reg {
+    St1 = 0x02,
+    Hxl = 0x03, // XoutL
+    Cntl1 = 0x0a,
+    St2 = 0x09,
+    Asax = 0x10, // Sensitivity values
+}
+
+impl Ak8963Reg {
+    pub fn addr(&self) -> u8 {
+        *self as u8
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum RegCntl1 {
+    PowerDn = 0,
+    ContMeas1 = 0x02, // 8hz sampling
+    ContMeas2 = 0x06, // 100hz sampling
+    FuseRom = 0x0f,
+    Sensitivity16bit = 1 << 4,
+}
+
+impl RegCntl1 {
+    pub fn mask(&self) -> u8 {
+        *self as u8
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum SampleRate {
+    /// Continuous measurement mode 1
+    Hz8,
+    /// Continuous measurement mode 2
+    Hz100,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum Sensitivity {
+    /// 0.6 uT/LSB
+    Bit14,
+    /// 0.15 uT/LSB
+    Bit16,
+}
+
+impl Sensitivity {
+    pub fn get_sensetivity(&self) -> f32 {
+        MEAS_RANGE
+            / match *self {
+                Sensitivity::Bit14 => (i16::MAX as f32 + 1.0) / 4.0,
+                Sensitivity::Bit16 => i16::MAX as f32 + 1.0,
+            }
+    }
+}
+
+impl Default for Sensitivity {
+    fn default() -> Self {
+        Sensitivity::Bit14
     }
 }
