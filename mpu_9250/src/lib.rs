@@ -3,6 +3,8 @@
 #![feature(impl_trait_in_assoc_type)]
 #![allow(async_fn_in_trait)]
 
+use core::mem::{size_of, transmute};
+use defmt::info;
 use embassy_rp::i2c::{self, Error, Instance, Mode};
 use embassy_time::Timer;
 use embedded_hal_async::i2c::I2c;
@@ -28,6 +30,46 @@ pub trait Magnetometer {
 }
 pub trait Barometer {
     async fn baro(&mut self) -> Result<f32, Error>;
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct ImuMeasurement {
+    pub acc: F32x3,
+    pub gyro: F32x3,
+    pub mag: F32x3,
+}
+
+type Float3 = [u8; 3 * size_of::<f32>()];
+
+impl Into<[u8; 36]> for ImuMeasurement {
+    fn into(self) -> [u8; 36] {
+        let mut data = [0u8; 36];
+        let acc = self.acc.to_array();
+        let gyro = self.gyro.to_array();
+        let mag = self.mag.to_array();
+
+        let mut buff: &Float3;
+
+        unsafe {
+            buff = transmute::<&[f32; 3], &Float3>(&acc);
+        };
+        let target = &mut data[0..12];
+        target.copy_from_slice(buff);
+
+        unsafe {
+            buff = transmute::<&[f32; 3], &Float3>(&gyro);
+        };
+        let target = &mut data[12..24];
+        target.copy_from_slice(buff);
+
+        unsafe {
+            buff = transmute::<&[f32; 3], &Float3>(&mag);
+        };
+        let target = &mut data[24..36];
+        target.copy_from_slice(buff);
+
+        data
+    }
 }
 
 pub struct Mpu9250<'d, T, M>
