@@ -11,6 +11,7 @@ MAG_CAMERA_VIEW = (-0.1, -100.0, 1.2, 300.0)
 
 
 def update(event):
+    serial_port.write(b"Give")
     m = np.frombuffer(serial_port.read(36), dtype=np.float32)
     acc.roll_data(m[0:3])
     gyro.roll_data(m[3:6])

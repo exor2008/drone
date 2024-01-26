@@ -115,7 +115,7 @@ where
         self.set_accel_range(self.acc_range).await?;
 
         // Sample rate 125 Hz
-        self.set_sample_rate(30).await?;
+        self.set_sample_rate(125).await?;
 
         // Bypass mode
         self.enable_bypass().await?;

@@ -96,7 +96,7 @@ async fn main(spawner: Spawner) {
         crate::panic!("IMU Sensor is not MPU 9250");
     }
 
-    let mut ticket = Ticker::every(Duration::from_millis(30));
+    let mut ticket = Ticker::every(Duration::from_millis(1));
     loop {
         let acc = mpu_9250.acc().await.unwrap();
         let gyro = mpu_9250.gyro().await.unwrap();
@@ -105,7 +105,7 @@ async fn main(spawner: Spawner) {
         // info!("gyro {} {} {}", gyro.x, gyro.y, gyro.z);
 
         let measurements = ImuMeasurement { acc, gyro, mag };
-        CHANNEL.send(measurements).await;
+        let _ = CHANNEL.try_send(measurements);
 
         // if mpu_9250.is_mag_ready().await.unwrap() {
         //     let mag = mpu_9250.mag().await.unwrap();
@@ -145,13 +145,18 @@ impl From<EndpointError> for Disconnected {
 }
 
 async fn send_measurements<'d, T: Instance + 'd>(
-    class: &mut CdcAcmClass<'d, Driver<'d, T>>,
+    serial: &mut CdcAcmClass<'d, Driver<'d, T>>,
 ) -> Result<(), Disconnected> {
-    let mut ticker = Ticker::every(Duration::from_millis(30));
+    let mut buf = [0; 64];
     loop {
+        // Wait for request for measurements
+        serial.read_packet(&mut buf).await?;
+
+        // Wait for measurements from sensor
         let measurement = CHANNEL.receive().await;
+
+        // Send measurements over serial port
         let data: [u8; 36] = measurement.into();
-        class.write_packet(&data).await?;
-        ticker.next().await;
+        serial.write_packet(&data).await?;
     }
 }
