@@ -11,7 +11,7 @@ use embassy_rp::bind_interrupts;
 use embassy_rp::i2c::{self, Async, Config as ConfigI2c, InterruptHandler as InterruptHandlerI2c};
 use embassy_rp::peripherals::I2C0;
 use embassy_rp::peripherals::USB;
-use embassy_rp::usb::{Driver, InterruptHandler as InterruptHandlerUsb};
+use embassy_rp::usb::{Driver, Instance, InterruptHandler as InterruptHandlerUsb};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_time::{Duration, Ticker};
@@ -96,7 +96,7 @@ async fn main(spawner: Spawner) {
         crate::panic!("IMU Sensor is not MPU 9250");
     }
 
-    let mut ticket = Ticker::every(Duration::from_millis(1));
+    let mut ticket = Ticker::every(Duration::from_millis(30));
     loop {
         let acc = mpu_9250.acc().await.unwrap();
         let gyro = mpu_9250.gyro().await.unwrap();
@@ -105,9 +105,7 @@ async fn main(spawner: Spawner) {
         // info!("gyro {} {} {}", gyro.x, gyro.y, gyro.z);
 
         let measurements = ImuMeasurement { acc, gyro, mag };
-        if let Err(_) = CHANNEL.try_send(measurements) {
-            // info!("IMU channel overflowed");
-        }
+        CHANNEL.send(measurements).await;
 
         // if mpu_9250.is_mag_ready().await.unwrap() {
         //     let mag = mpu_9250.mag().await.unwrap();
@@ -124,15 +122,14 @@ async fn usb_task(mut usb: UsbDevice<'static, Driver<'static, USB>>) -> ! {
 
 #[embassy_executor::task]
 async fn send_measurements_usb_task(mut class: CdcAcmClass<'static, Driver<'static, USB>>) -> ! {
-    class.wait_connection().await;
-    info!("Connected");
     let mut buf = [0; 64];
-    let _n = class.read_packet(&mut buf).await.unwrap();
-    info!("Sending...");
     loop {
-        let measurement = CHANNEL.receive().await;
-        let data: [u8; 36] = measurement.into();
-        class.write_packet(&data).await.unwrap();
+        class.wait_connection().await;
+        info!("Connected");
+        let _n = class.read_packet(&mut buf).await;
+        info!("Sending...");
+        let _ = send_measurements(&mut class).await;
+        info!("Disconnected");
     }
 }
 
@@ -144,5 +141,17 @@ impl From<EndpointError> for Disconnected {
             EndpointError::BufferOverflow => crate::panic!("Buffer overflow"),
             EndpointError::Disabled => Disconnected {},
         }
+    }
+}
+
+async fn send_measurements<'d, T: Instance + 'd>(
+    class: &mut CdcAcmClass<'d, Driver<'d, T>>,
+) -> Result<(), Disconnected> {
+    let mut ticker = Ticker::every(Duration::from_millis(30));
+    loop {
+        let measurement = CHANNEL.receive().await;
+        let data: [u8; 36] = measurement.into();
+        class.write_packet(&data).await?;
+        ticker.next().await;
     }
 }

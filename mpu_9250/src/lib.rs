@@ -4,7 +4,6 @@
 #![allow(async_fn_in_trait)]
 
 use core::mem::{size_of, transmute};
-use defmt::info;
 use embassy_rp::i2c::{self, Error, Instance, Mode};
 use embassy_time::Timer;
 use embedded_hal_async::i2c::I2c;
@@ -116,7 +115,7 @@ where
         self.set_accel_range(self.acc_range).await?;
 
         // Sample rate 125 Hz
-        self.set_sample_rate(125).await?;
+        self.set_sample_rate(30).await?;
 
         // Bypass mode
         self.enable_bypass().await?;
