@@ -88,6 +88,12 @@ async fn main(spawner: Spawner) {
 
     let mut mpu_9250 = Mpu9250::new_async(sensor);
 
+    // reset
+    mpu_9250.reset().await.unwrap();
+
+    // calibrate
+    mpu_9250.calibrate().await.unwrap();
+
     // Initialize IMU
     mpu_9250.init().await.unwrap();
 

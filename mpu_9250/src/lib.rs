@@ -4,6 +4,7 @@
 #![allow(async_fn_in_trait)]
 
 use core::mem::{size_of, transmute};
+use defmt::info;
 use embassy_rp::i2c::{self, Error, Instance, Mode};
 use embassy_time::Timer;
 use embedded_hal_async::i2c::I2c;
@@ -14,6 +15,7 @@ use register::*;
 
 pub const ACC_ADDR: u8 = 0x68;
 pub const MAG_ADDR: u8 = 0x0C;
+pub const CALLIBRATION_SAMPLES: u16 = 2000;
 
 pub trait Accelerometer {
     async fn acc(&mut self) -> Result<F32x3, Error>;
@@ -98,13 +100,6 @@ where
     }
 
     pub async fn init(&mut self) -> Result<(), Error> {
-        // Reset
-        self.write(
-            ACC_ADDR,
-            &[Mpu9250Reg::PwrMgmt1.addr(), RegPwrMgmt1::Hreset.mask()],
-        )
-        .await?;
-
         // Low pass filter 5 Hz
         self.set_low_pass_filter(GyroDlpf::Hz5).await?;
 
@@ -130,21 +125,62 @@ where
         Ok(())
     }
 
-    pub async fn check(&mut self) -> Result<bool, Error> {
-        let mut buffer = [0u8; 2];
-        self.read(ACC_ADDR, &[0x75], &mut buffer[0..1]).await?;
+    pub async fn calibrate(&mut self) -> Result<(), Error> {
+        // Prepare device for calibration
+        // Low pass filter 184 Hz
+        self.set_low_pass_filter(GyroDlpf::Hz184).await?;
 
-        self.read(MAG_ADDR, &[0x0], &mut buffer[1..2]).await?;
+        // Most sensetive mag mode
+        self.set_gyro_range(GyroRange::Dps250).await?;
 
-        Ok(buffer[0] == 0x71 && buffer[1] == 0x48)
+        // Most sensetive accel mode
+        self.set_accel_range(AccelRange::G2).await?;
+
+        // Max rate 1000 Hz
+        self.set_sample_rate(1000).await?;
+
+        let mut acc = F32x3::default();
+        let mut gyro = F32x3::default();
+
+        for _ in 0..CALLIBRATION_SAMPLES {
+            acc += self.acc().await?;
+            gyro += self.gyro().await?;
+            Timer::after_millis(1).await;
+        }
+
+        acc = acc * (1.0 / CALLIBRATION_SAMPLES as f32);
+        gyro = gyro * (1.0 / CALLIBRATION_SAMPLES as f32);
+        info!("Measuret gyro offset (m/s) {}", gyro.to_array());
+
+        self.set_gyro_offsets(gyro).await?;
+        Ok(())
     }
+}
 
+impl<'d, T> Mpu9250<'d, T, i2c::Async>
+where
+    T: Instance,
+{
     pub async fn read(&mut self, addr: u8, data: &[u8], buffer: &mut [u8]) -> Result<(), Error> {
         Ok(self.i2c.write_read(addr, data, buffer).await?)
     }
 
     pub async fn write(&mut self, addr: u8, data: &[u8]) -> Result<(), Error> {
         Ok(self.i2c.write(addr, data).await?)
+    }
+}
+
+impl<'d, T> Mpu9250<'d, T, i2c::Async>
+where
+    T: Instance,
+{
+    pub async fn reset(&mut self) -> Result<(), Error> {
+        self.write(
+            ACC_ADDR,
+            &[Mpu9250Reg::PwrMgmt1.addr(), RegPwrMgmt1::Hreset.mask()],
+        )
+        .await?;
+        Ok(())
     }
 
     pub async fn set_sample_rate(&mut self, rate: u16) -> Result<(), Error> {
@@ -269,6 +305,58 @@ where
         self.write(MAG_ADDR, &[Ak8963Reg::Cntl1.addr(), cntl1_byte])
             .await?;
         Ok(())
+    }
+
+    pub async fn check(&mut self) -> Result<bool, Error> {
+        let mut buffer = [0u8; 2];
+        self.read(ACC_ADDR, &[0x75], &mut buffer[0..1]).await?;
+
+        self.read(MAG_ADDR, &[0x0], &mut buffer[1..2]).await?;
+
+        Ok(buffer[0] == 0x71 && buffer[1] == 0x48)
+    }
+
+    pub async fn set_gyro_offsets(&mut self, offsets: F32x3) -> Result<(), Error> {
+        // Divide by 4 to get 32.9 LSB per deg/s to conform to expected bias
+        // input format.
+        // Biases are additive, so change sign on
+        // calculated average gyro biases
+        let dps = self.gyro_range.get_dps();
+
+        let offsets = offsets * -0.25 * (1.0 / dps);
+
+        let x_gyro: [u8; 2] = (offsets.x as i16).to_be_bytes();
+        let y_gyro: [u8; 2] = (offsets.y as i16).to_be_bytes();
+        let z_gyro: [u8; 2] = (offsets.z as i16).to_be_bytes();
+
+        let data = [
+            Mpu9250Reg::XgOffsetH.addr(),
+            x_gyro[0],
+            x_gyro[1],
+            y_gyro[0],
+            y_gyro[1],
+            z_gyro[0],
+            z_gyro[1],
+        ];
+
+        self.write(ACC_ADDR, &data).await?;
+        Ok(())
+    }
+
+    pub async fn get_unscaled_gyro_offsets(&mut self) -> Result<I16x3, Error> {
+        let mut gyro = [0u8; 6];
+
+        self.read(ACC_ADDR, &[Mpu9250Reg::XgOffsetH.addr()], &mut gyro)
+            .await?;
+
+        let x_gyro =
+            i16::from_be_bytes(gyro[0..2].try_into().expect("Slice with incorrect length"));
+        let y_gyro =
+            i16::from_be_bytes(gyro[2..4].try_into().expect("Slice with incorrect length"));
+        let z_gyro =
+            i16::from_be_bytes(gyro[4..6].try_into().expect("Slice with incorrect length"));
+
+        Ok(I16x3::from((x_gyro, y_gyro, z_gyro)))
     }
 }
 

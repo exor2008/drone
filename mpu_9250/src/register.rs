@@ -5,6 +5,7 @@ const MEAS_RANGE: f32 = 4912.0; // UT = micro teslas
 
 #[derive(Clone, Copy)]
 pub enum Mpu9250Reg {
+    XgOffsetH = 0x13,
     SmplrtDiv = 0x19,
     Config = 0x1A,
     GyroConfig = 0x1B,

@@ -9,12 +9,25 @@ ACC_CAMERA_VIEW = (-0.1, -10.0, 1.2, 50.0)
 GYRO_CAMERA_VIEW = (-0.1, -1000.0, 1.2, 4000.0)
 MAG_CAMERA_VIEW = (-0.1, -100.0, 1.2, 300.0)
 
+sum_gyro = np.zeros(3)
+sum_acc = np.zeros(3)
+
 
 def update(event):
+    global sum_gyro
+    global sum_acc
+
     serial_port.write(b"Give")
     m = np.frombuffer(serial_port.read(36), dtype=np.float32)
-    acc.roll_data(m[0:3])
-    gyro.roll_data(m[3:6])
+
+    sum_acc += m[0:3]
+    sum_gyro += m[3:6]
+
+    # print(m[0:3])
+    # print(m[3:6])
+
+    acc.roll_data(sum_acc)
+    gyro.roll_data(sum_gyro)
     mag.roll_data(m[6:9])
     # print("acc", m[0:3].min(), m[0:3].max())
     # print("gyro", m[3:6].min(), m[3:6].max())
