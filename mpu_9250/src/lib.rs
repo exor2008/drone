@@ -13,9 +13,10 @@ use micromath::vector::{F32x3, I16x3};
 mod register;
 use register::*;
 
-pub const ACC_ADDR: u8 = 0x68;
-pub const MAG_ADDR: u8 = 0x0C;
-pub const CALLIBRATION_SAMPLES: u16 = 2000;
+const ACC_ADDR: u8 = 0x68;
+const MAG_ADDR: u8 = 0x0C;
+const CALLIBRATION_SAMPLES: u16 = 2000;
+const PI_180: f32 = core::f32::consts::PI / 180.0;
 
 pub trait Accelerometer {
     async fn acc(&mut self) -> Result<F32x3, Error>;
@@ -272,6 +273,7 @@ where
             .await?;
 
         let factory_adjust = F32x3::from_iter(buf.map(|v| ((v - 128) as f32) / 256.0 + 1.0));
+        info!("Mag factory adjustments: {}", factory_adjust.to_array());
 
         Ok(factory_adjust)
     }
@@ -394,7 +396,7 @@ where
         self.read(ACC_ADDR, &[Mpu9250Reg::GyroConfigXoutH.addr()], &mut gyro)
             .await?;
 
-        let dps = self.gyro_range.get_dps();
+        let scale = self.gyro_range.get_dps();
         let x_gyro =
             i16::from_be_bytes(gyro[0..2].try_into().expect("Slice with incorrect length"));
         let y_gyro =
@@ -402,9 +404,9 @@ where
         let z_gyro =
             i16::from_be_bytes(gyro[4..6].try_into().expect("Slice with incorrect length"));
 
-        let x_gyro = dps * x_gyro as f32;
-        let y_gyro = dps * y_gyro as f32;
-        let z_gyro = dps * z_gyro as f32;
+        let x_gyro = scale * x_gyro as f32;
+        let y_gyro = scale * y_gyro as f32;
+        let z_gyro = scale * z_gyro as f32;
 
         Ok(F32x3::from((x_gyro, y_gyro, z_gyro)))
     }
@@ -429,9 +431,14 @@ where
             .await?;
 
         let mag_sens = self.mag_sensitivity.get_sensetivity();
-        let measurements = F32x3::from(I16x3::from((x_mag, y_mag, z_mag)));
 
-        Ok(measurements * self.mag_factory_adjust * mag_sens)
+        let [x_adjust, y_adjust, z_adjust] = self.mag_factory_adjust.to_array();
+
+        let x_mag = x_mag as f32 * x_adjust * mag_sens;
+        let y_mag = y_mag as f32 * y_adjust * mag_sens;
+        let z_mag = z_mag as f32 * z_adjust * mag_sens;
+
+        Ok(F32x3::from((x_mag, y_mag, z_mag)))
     }
 
     async fn is_mag_ready(&mut self) -> Result<bool, Error> {
