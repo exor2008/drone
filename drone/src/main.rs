@@ -43,6 +43,8 @@ static CONTROL_BUF: StaticCell<[u8; 64]> = StaticCell::new();
 
 static STATE: StaticCell<State<'_>> = StaticCell::new();
 
+const PI_180: f32 = core::f32::consts::PI / 180.0;
+
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
@@ -104,24 +106,32 @@ async fn main(spawner: Spawner) {
     }
 
     // Creaate Mahony data fusion
-    let mut mahony = Mahony::default();
+    let mut mahony = Mahony::new(0.003, 0.1, 0.001);
 
     let mut ticket = Ticker::every(Duration::from_millis(1));
     loop {
         let acc = mpu_9250.acc().await.unwrap();
-        let gyro = mpu_9250.gyro().await.unwrap();
+        let gyro = mpu_9250.gyro().await.unwrap() * PI_180;
 
         if mpu_9250.is_mag_ready().await.unwrap() {
             let mag = mpu_9250.mag().await.unwrap();
             mahony.update(gyro, acc, mag);
-            let measurements = ImuMeasurement { acc, gyro, mag };
+            let angle = F32x3::from(mahony.quat.to_euler());
+            let measurements = ImuMeasurement {
+                acc,
+                gyro,
+                mag,
+                angle,
+            };
             let _ = CHANNEL.try_send(measurements);
         } else {
             mahony.update_imu(gyro, acc);
+            let angle = F32x3::from(mahony.quat.to_euler());
             let measurements = ImuMeasurement {
                 acc,
                 gyro,
                 mag: F32x3::default(),
+                angle,
             };
             let _ = CHANNEL.try_send(measurements);
         }
@@ -170,7 +180,7 @@ async fn send_measurements<'d, T: Instance + 'd>(
         let measurement = CHANNEL.receive().await;
 
         // Send measurements over serial port
-        let data: [u8; 36] = measurement.into();
+        let data: [u8; 48] = measurement.into();
         serial.write_packet(&data).await?;
     }
 }

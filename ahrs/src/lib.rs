@@ -2,8 +2,9 @@
 #![no_std]
 #![no_main]
 
+use defmt::info;
 use micromath::{
-    vector::{F32x2, F32x3, Vector, Vector2d},
+    vector::{F32x3, Vector, Vector2d, Vector3d},
     Quaternion,
 };
 
@@ -50,36 +51,26 @@ impl Mahony {
         let q = &self.quat;
 
         // Normalize accelerometer measurement
-        let acc_mag = accelerometer.magnitude();
-        let acc = if acc_mag == 0.0 {
-            F32x3::default()
-        } else {
-            accelerometer * (1.0 / acc_mag)
-        };
+        let acc = accelerometer.normalize();
 
         // Normalize magnetometer measurement
-        let mag_mag = magnetometer.magnitude();
-        let mag = if mag_mag == 0.0 {
-            F32x3::default()
-        } else {
-            magnetometer * (1.0 / mag_mag)
-        };
+        let mag = magnetometer.normalize();
 
         // Reference direction of Earth's magnetic field (Quaternion should still be conj of q)
         let h = *q * (Quaternion::new(0.0, mag.x, mag.y, mag.z) * q.conj());
-        let b = Quaternion::new(0.0, Vector2d::from((h.w(), h.x())).magnitude(), 0.0, h.y());
+        let b = Quaternion::new(0.0, Vector2d::from((h.x(), h.y())).magnitude(), 0.0, h.z());
 
         let v = F32x3::from((
-            2.0 * (q.w() * q.y() - q.z() * q.x()),
-            2.0 * (q.z() * q.w() + q.x() * q.y()),
-            (q.z() * q.z() - q.w() * q.w() - q.x() * q.x() + q.y() * q.y()),
+            2.0 * (q.x() * q.z() - q.w() * q.y()),
+            2.0 * (q.w() * q.x() + q.y() * q.z()),
+            (q.w() * q.w() - q.x() * q.x() - q.y() * q.y() + q.z() * q.z()),
         ));
 
         #[rustfmt::skip]
         let w = F32x3::from((
-            2.0 * b.x() * (0.5 - q.x() * q.x() - q.y() * q.y()) + 2.0 * b.z() * (q.w() * q.y() - q.z() * q.x()),
-            2.0 * b.x() * (q.w() * q.x() - q.z() * q.y())       + 2.0 * b.z() * (q.z() * q.w() + q.x() * q.y()),
-            2.0 * b.x() * (q.z() * q.x() + q.w() * q.y())       + 2.0 * b.z() * (0.5 - q.w() * q.w() - q.x() * q.x()),
+            2.0 * b.x() * (0.5 - q.y() * q.y() - q.z() * q.z()) + 2.0 * b.z() * (q.x() * q.z() - q.w() * q.y()),
+            2.0 * b.x() * (q.x() * q.y() - q.w() * q.z())       + 2.0 * b.z() * (q.w() * q.x() + q.y() * q.z()),
+            2.0 * b.x() * (q.w() * q.y() + q.x() * q.z())       + 2.0 * b.z() * (0.5 - q.x() * q.x() - q.y() * q.y()),
         ));
 
         // cross(acc, v) + cross(mag, w)
@@ -99,7 +90,9 @@ impl Mahony {
         let q_dot = self.quat * Quaternion::new(0.0, gyro.x, gyro.y, gyro.z) * 0.5;
 
         // Integrate to yield quaternion
-        self.quat = (self.quat + q_dot * self.sample_period).normalize();
+        let quat = self.quat + q_dot * self.sample_period;
+
+        self.quat = quat.normalize();
     }
 
     pub fn update_imu(&mut self, gyroscope: F32x3, accelerometer: F32x3) {
@@ -138,5 +131,20 @@ impl Mahony {
 
         // Integrate to yield quaternion
         self.quat = (self.quat + q_dot * self.sample_period).normalize();
+    }
+}
+
+pub trait Normalize {
+    fn normalize(&self) -> Vector3d<f32>;
+}
+
+impl Normalize for Vector3d<f32> {
+    fn normalize(&self) -> Vector3d<f32> {
+        let mag = self.magnitude();
+        if mag == 0.0 {
+            F32x3::default()
+        } else {
+            *self * (1.0 / mag)
+        }
     }
 }

@@ -18,7 +18,7 @@ sum_gyro = np.zeros(3)
 sum_acc = np.zeros(3)
 
 # madwick = ahrs.filters.Madgwick()
-mahony = ahrs.filters.Mahony()
+# mahony = ahrs.filters.Mahony(frequency=10, k_P=0.8)
 
 quat = np.asarray([1.0, 0.0, 0.0, 0.0])
 cube = None
@@ -30,19 +30,32 @@ def update(event):
     global quat
 
     serial_port.write(b"Give")
-    m = np.frombuffer(serial_port.read(36), dtype=np.float32)
+    m = np.frombuffer(serial_port.read(48), dtype=np.float32)
 
-    sum_acc += m[0:3]
-    sum_gyro += m[3:6]
+    # sum_acc += m[0:3]
+    sum_gyro += np.rad2deg(m[3:6])
 
-    # print(m[0:3])
-    # print(m[3:6])
+    # print("acc", m[0:3])
+    # print("gyro", m[3:6])
+    # print("mag", m[6:9])
+    # print("angle", m[9:])
 
-    acc.roll_data(sum_acc)
+    acc.roll_data(m[0:3])
     gyro.roll_data(sum_gyro)
     mag.roll_data(m[6:9])
 
-    quat = mahony.updateMARG(quat, np.deg2rad(m[3:6]), m[0:3], m[6:9])
+    # if not m[6:9].any():
+    #     quat = mahony.updateMARG(quat, np.deg2rad(m[3:6]), m[0:3], m[6:9])
+    # else:
+    #     quat = mahony.updateIMU(
+    #         quat,
+    #         np.deg2rad(m[3:6]),
+    #         m[0:3],
+    #     )
+
+    quat = Quaternion.create_from_euler_angles(*m[9:], degrees=False)
+    # quat = Quaternion(*quat)
+
     rotate_cube(cube, quat)
 
     # norm = m[6:9] / np.linalg.norm(m[6:9])
@@ -86,7 +99,7 @@ def get_widget(grid, row, col, rect, offset):
 
 
 def get_3d(grid, row, col):
-    view = grid.add_view(row=row, col=col)
+    view = grid.add_view(row=row, col=col, bgcolor="w")
     view.camera = "turntable"
     # view.camera = scene.cameras.ArcballCamera(parent=view.scene)
     cube = scene.Box(
@@ -98,7 +111,6 @@ def get_3d(grid, row, col):
 
 
 def rotate_cube(cube, quat):
-    quat = Quaternion(*quat)
     cube.transform.matrix = quat.get_matrix()
 
 

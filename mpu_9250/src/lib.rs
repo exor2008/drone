@@ -16,7 +16,6 @@ use register::*;
 const ACC_ADDR: u8 = 0x68;
 const MAG_ADDR: u8 = 0x0C;
 const CALLIBRATION_SAMPLES: u16 = 2000;
-const PI_180: f32 = core::f32::consts::PI / 180.0;
 
 pub trait Accelerometer {
     async fn acc(&mut self) -> Result<F32x3, Error>;
@@ -39,16 +38,18 @@ pub struct ImuMeasurement {
     pub acc: F32x3,
     pub gyro: F32x3,
     pub mag: F32x3,
+    pub angle: F32x3,
 }
 
 type Float3 = [u8; 3 * size_of::<f32>()];
 
-impl Into<[u8; 36]> for ImuMeasurement {
-    fn into(self) -> [u8; 36] {
-        let mut data = [0u8; 36];
+impl Into<[u8; 48]> for ImuMeasurement {
+    fn into(self) -> [u8; 48] {
+        let mut data = [0u8; 48];
         let acc = self.acc.to_array();
         let gyro = self.gyro.to_array();
         let mag = self.mag.to_array();
+        let angle = self.angle.to_array();
 
         let mut buff: &Float3;
 
@@ -68,6 +69,12 @@ impl Into<[u8; 36]> for ImuMeasurement {
             buff = transmute::<&[f32; 3], &Float3>(&mag);
         };
         let target = &mut data[24..36];
+        target.copy_from_slice(buff);
+
+        unsafe {
+            buff = transmute::<&[f32; 3], &Float3>(&angle);
+        };
+        let target = &mut data[36..48];
         target.copy_from_slice(buff);
 
         data
@@ -149,7 +156,7 @@ where
             Timer::after_millis(1).await;
         }
 
-        acc = acc * (1.0 / CALLIBRATION_SAMPLES as f32);
+        // acc = acc * (1.0 / CALLIBRATION_SAMPLES as f32);
         gyro = gyro * (1.0 / CALLIBRATION_SAMPLES as f32);
         info!("Measuret gyro offset (m/s) {}", gyro.to_array());
 
