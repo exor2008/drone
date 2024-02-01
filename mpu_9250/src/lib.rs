@@ -6,7 +6,7 @@
 use core::mem::{size_of, transmute};
 use defmt::info;
 use embassy_rp::i2c::{self, Error, Instance, Mode};
-use embassy_time::Timer;
+use embassy_time::{Duration, Ticker, Timer};
 use embedded_hal_async::i2c::I2c;
 use micromath::vector::{F32x3, I16x3};
 
@@ -38,44 +38,45 @@ pub struct ImuMeasurement {
     pub acc: F32x3,
     pub gyro: F32x3,
     pub mag: F32x3,
-    pub angle: F32x3,
+    pub angle: [f32; 4],
 }
 
 type Float3 = [u8; 3 * size_of::<f32>()];
+type Float4 = [u8; 4 * size_of::<f32>()];
 
-impl Into<[u8; 48]> for ImuMeasurement {
-    fn into(self) -> [u8; 48] {
-        let mut data = [0u8; 48];
+impl Into<[u8; 52]> for ImuMeasurement {
+    fn into(self) -> [u8; 52] {
+        let mut data = [0u8; 52];
         let acc = self.acc.to_array();
         let gyro = self.gyro.to_array();
         let mag = self.mag.to_array();
-        let angle = self.angle.to_array();
 
-        let mut buff: &Float3;
+        let mut buff3f: &Float3;
+        let buff4f: &Float4;
 
         unsafe {
-            buff = transmute::<&[f32; 3], &Float3>(&acc);
+            buff3f = transmute::<&[f32; 3], &Float3>(&acc);
         };
         let target = &mut data[0..12];
-        target.copy_from_slice(buff);
+        target.copy_from_slice(buff3f);
 
         unsafe {
-            buff = transmute::<&[f32; 3], &Float3>(&gyro);
+            buff3f = transmute::<&[f32; 3], &Float3>(&gyro);
         };
         let target = &mut data[12..24];
-        target.copy_from_slice(buff);
+        target.copy_from_slice(buff3f);
 
         unsafe {
-            buff = transmute::<&[f32; 3], &Float3>(&mag);
+            buff3f = transmute::<&[f32; 3], &Float3>(&mag);
         };
         let target = &mut data[24..36];
-        target.copy_from_slice(buff);
+        target.copy_from_slice(buff3f);
 
         unsafe {
-            buff = transmute::<&[f32; 3], &Float3>(&angle);
+            buff4f = transmute::<&[f32; 4], &Float4>(&self.angle);
         };
-        let target = &mut data[36..48];
-        target.copy_from_slice(buff);
+        let target = &mut data[36..52];
+        target.copy_from_slice(buff4f);
 
         data
     }
@@ -91,6 +92,8 @@ where
     acc_range: AccelRange,
     mag_factory_adjust: F32x3,
     mag_sensitivity: Sensitivity,
+    acc_offset: F32x3,
+    acc_g: F32x3,
 }
 
 impl<'d, T> Mpu9250<'d, T, i2c::Async>
@@ -104,6 +107,8 @@ where
             acc_range: AccelRange::default(),
             mag_factory_adjust: F32x3::default(),
             mag_sensitivity: Sensitivity::default(),
+            acc_offset: F32x3::default(),
+            acc_g: F32x3::from((9.8, 9.8, 9.8)),
         }
     }
 
@@ -118,7 +123,7 @@ where
         self.set_accel_range(self.acc_range).await?;
 
         // Sample rate 125 Hz
-        self.set_sample_rate(125).await?;
+        self.set_sample_rate(333).await?;
 
         // Bypass mode
         self.enable_bypass().await?;
@@ -133,7 +138,7 @@ where
         Ok(())
     }
 
-    pub async fn calibrate(&mut self) -> Result<(), Error> {
+    pub async fn calibrate_gyro(&mut self) -> Result<(), Error> {
         // Prepare device for calibration
         // Low pass filter 184 Hz
         self.set_low_pass_filter(GyroDlpf::Hz184).await?;
@@ -141,27 +146,108 @@ where
         // Most sensetive mag mode
         self.set_gyro_range(GyroRange::Dps250).await?;
 
+        // Max rate 1000 Hz
+        self.set_sample_rate(1000).await?;
+
+        let mut gyro = F32x3::default();
+
+        info!("Calibrating gyro...");
+        let mut timer = Ticker::every(Duration::from_millis(1));
+        for _ in 0..CALLIBRATION_SAMPLES {
+            gyro += self.gyro().await?;
+            timer.next().await;
+        }
+
+        gyro = gyro * (1.0 / CALLIBRATION_SAMPLES as f32);
+        info!("Calibrating done.");
+        info!("Gyro offset (m/s) {}", gyro.to_array());
+
+        self.set_gyro_offsets(gyro).await?;
+
+        Ok(())
+    }
+
+    pub async fn calibrate_acc_6_point(&mut self) -> Result<(), Error> {
+        // Prepare device for calibration
+        // Low pass filter 184 Hz
+        self.set_low_pass_filter(GyroDlpf::Hz184).await?;
+
         // Most sensetive accel mode
         self.set_accel_range(AccelRange::G2).await?;
 
         // Max rate 1000 Hz
         self.set_sample_rate(1000).await?;
 
-        let mut acc = F32x3::default();
-        let mut gyro = F32x3::default();
+        info!("Place Z up");
+        Timer::after_secs(8).await;
+        info!("Collecting...");
+        let z_up = self.collect_acc().await?;
 
+        info!("Place Z down");
+        Timer::after_secs(8).await;
+        info!("Collecting...");
+        let z_down = self.collect_acc().await?;
+
+        info!("Place X up");
+        Timer::after_secs(8).await;
+        info!("Collecting...");
+        let x_up = self.collect_acc().await?;
+
+        info!("Place X down");
+        Timer::after_secs(8).await;
+        info!("Collecting...");
+        let x_down = self.collect_acc().await?;
+
+        info!("Place Y up");
+        Timer::after_secs(8).await;
+        info!("Collecting...");
+        let y_up = self.collect_acc().await?;
+
+        info!("Place Y down");
+        Timer::after_secs(8).await;
+        info!("Collecting...");
+        let y_down = self.collect_acc().await?;
+
+        info!("Z up: {}", z_up.to_array());
+        info!("Z down: {}", z_down.to_array());
+        info!("X up: {}", x_up.to_array());
+        info!("X down: {}", x_down.to_array());
+        info!("Y up: {}", y_up.to_array());
+        info!("Y down: {}", y_down.to_array());
+
+        let x_offset = (y_up.x + y_down.x + z_up.x + z_down.x) * 0.25;
+        let y_offset = (x_up.y + x_down.y + z_up.y + z_down.y) * 0.25;
+        let z_offset = (x_up.z + x_down.z + y_up.z + y_down.z) * 0.25;
+
+        let x_scale = (x_up.x - x_down.x) * 0.5;
+        let y_scale = (y_up.y - y_down.y) * 0.5;
+        let z_scale = (z_up.z - z_down.z) * 0.5;
+
+        self.acc_offset = F32x3::from((x_offset, y_offset, z_offset));
+        self.acc_g = F32x3::from((x_scale, y_scale, z_scale));
+
+        info!(
+            "6 point acc offset: {}, scale: {}",
+            self.acc_offset.to_array(),
+            self.acc_g.to_array()
+        );
+
+        // self.set_acc_offsets(acc).await?;
+
+        Ok(())
+    }
+
+    async fn collect_acc(&mut self) -> Result<F32x3, Error> {
+        let mut acc = F32x3::default();
+
+        let mut timer = Ticker::every(Duration::from_millis(1));
         for _ in 0..CALLIBRATION_SAMPLES {
             acc += self.acc().await?;
-            gyro += self.gyro().await?;
-            Timer::after_millis(1).await;
+            timer.next().await;
         }
 
-        // acc = acc * (1.0 / CALLIBRATION_SAMPLES as f32);
-        gyro = gyro * (1.0 / CALLIBRATION_SAMPLES as f32);
-        info!("Measuret gyro offset (m/s) {}", gyro.to_array());
-
-        self.set_gyro_offsets(gyro).await?;
-        Ok(())
+        acc = acc * (1.0 / CALLIBRATION_SAMPLES as f32);
+        Ok(acc)
     }
 }
 
@@ -367,6 +453,69 @@ where
 
         Ok(I16x3::from((x_gyro, y_gyro, z_gyro)))
     }
+
+    pub async fn get_unscaled_acc_offsets(&mut self) -> Result<I16x3, Error> {
+        let mut acc = [0u8; 6];
+
+        self.read(ACC_ADDR, &[Mpu9250Reg::XaOffsetH.addr()], &mut acc)
+            .await?;
+
+        let x_acc = i16::from_be_bytes(acc[0..2].try_into().expect("Slice with incorrect length"));
+        let y_acc = i16::from_be_bytes(acc[2..4].try_into().expect("Slice with incorrect length"));
+        let z_acc = i16::from_be_bytes(acc[4..6].try_into().expect("Slice with incorrect length"));
+
+        Ok(I16x3::from((x_acc, y_acc, z_acc)))
+    }
+
+    pub async fn get_acc_offsets(&mut self) -> Result<F32x3, Error> {
+        let offsets = F32x3::from(self.get_unscaled_acc_offsets().await?);
+        let scale = self.acc_g * self.acc_range.get_sensitivity_g();
+
+        let x = offsets.x * scale.x;
+        let y = offsets.y * scale.y;
+        let z = offsets.z * scale.z;
+
+        Ok(F32x3::from((x, y, z)))
+    }
+
+    pub async fn set_acc_offsets(&mut self, offsets: F32x3) -> Result<(), Error> {
+        let factory = self.get_acc_offsets().await?;
+        let offsets = offsets + factory;
+
+        let scale = self.acc_g * self.acc_range.get_sensitivity_g();
+        let inv_scale_x = 1.0 / scale.x;
+        let inv_scale_y = 1.0 / scale.y;
+        let inv_scale_z = 1.0 / scale.z;
+
+        let offset_x = offsets.x * inv_scale_x;
+        let offset_y = offsets.y * inv_scale_y;
+        let offset_z = offsets.z * inv_scale_z;
+
+        let x_acc: [u8; 2] = (offset_x as i16).to_be_bytes();
+        let y_acc: [u8; 2] = (offset_y as i16).to_be_bytes();
+        let z_acc: [u8; 2] = (offset_z as i16).to_be_bytes();
+
+        let data = [
+            Mpu9250Reg::XaOffsetH.addr(),
+            x_acc[0],
+            x_acc[1],
+            y_acc[0],
+            y_acc[1],
+            z_acc[0],
+            z_acc[1],
+        ];
+        self.write(ACC_ADDR, &data).await?;
+
+        Ok(())
+    }
+
+    pub fn set_acc_g(&mut self, g: F32x3) {
+        self.acc_g = g;
+    }
+
+    pub fn get_acc_g(&mut self) -> F32x3 {
+        self.acc_g
+    }
 }
 
 impl<'d, T> Accelerometer for Mpu9250<'d, T, i2c::Async>
@@ -379,16 +528,14 @@ where
         self.read(ACC_ADDR, &[Mpu9250Reg::AccelXoutH.addr()], &mut acc)
             .await?;
 
-        let sensetivity = self.acc_range.get_sensitivity_mss();
+        let sensetivity = self.acc_g * self.acc_range.get_sensitivity_g();
         let x_acc = i16::from_be_bytes(acc[0..2].try_into().expect("Slice with incorrect length"));
         let y_acc = i16::from_be_bytes(acc[2..4].try_into().expect("Slice with incorrect length"));
         let z_acc = i16::from_be_bytes(acc[4..6].try_into().expect("Slice with incorrect length"));
 
-        let x_acc = sensetivity * x_acc as f32;
-        let y_acc = sensetivity * y_acc as f32;
-        let z_acc = sensetivity * z_acc as f32;
+        let acc = F32x3::from((x_acc as f32, y_acc as f32, z_acc as f32));
 
-        Ok(F32x3::from((x_acc, y_acc, z_acc)))
+        Ok(acc * sensetivity)
     }
 }
 

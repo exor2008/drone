@@ -14,7 +14,7 @@ use embassy_rp::peripherals::USB;
 use embassy_rp::usb::{Driver, Instance, InterruptHandler as InterruptHandlerUsb};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::channel::Channel;
-use embassy_time::{Duration, Ticker};
+use embassy_time::{Duration, Ticker, Timer};
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
 use embassy_usb::driver::EndpointError;
 use embassy_usb::{Builder, Config as ConfigUsb, UsbDevice};
@@ -93,9 +93,32 @@ async fn main(spawner: Spawner) {
 
     // reset
     mpu_9250.reset().await.unwrap();
+    Timer::after_millis(200).await;
 
-    // calibrate
-    mpu_9250.calibrate().await.unwrap();
+    // calibrate gyro
+    mpu_9250.calibrate_gyro().await.unwrap();
+
+    // 6 point acc calibration
+    // mpu_9250.calibrate_acc_6_point().await.unwrap();
+
+    // Set calibrated values
+    // Offsets added to factory offsets
+    mpu_9250
+        .set_acc_offsets(F32x3::from((0.35072445, 0.15323068, -0.0035959)))
+        .await
+        .unwrap();
+
+    mpu_9250.set_acc_g(F32x3::from((9.821422, 9.8252588, 9.990623)));
+
+    let acc_offsets = mpu_9250.get_acc_offsets().await.unwrap();
+    info!("Accelerometer offsets {}", acc_offsets.to_array());
+    info!("Accelerometer G {}", mpu_9250.get_acc_g().to_array());
+
+    // Set predefined offset data
+    // mpu_9250
+    //     .set_gyro_offsets(F32x3::from((-2.7188249, 2.5960972, -1.4283828)))
+    //     .await
+    //     .unwrap();
 
     // Initialize IMU
     mpu_9250.init().await.unwrap();
@@ -106,9 +129,9 @@ async fn main(spawner: Spawner) {
     }
 
     // Creaate Mahony data fusion
-    let mut mahony = Mahony::new(0.003, 0.1, 0.001);
+    let mut mahony = Mahony::new(0.003, 0.05, 0.00000);
 
-    let mut ticket = Ticker::every(Duration::from_millis(1));
+    let mut ticket = Ticker::every(Duration::from_millis(3));
     loop {
         let acc = mpu_9250.acc().await.unwrap();
         let gyro = mpu_9250.gyro().await.unwrap() * PI_180;
@@ -116,7 +139,7 @@ async fn main(spawner: Spawner) {
         if mpu_9250.is_mag_ready().await.unwrap() {
             let mag = mpu_9250.mag().await.unwrap();
             mahony.update(gyro, acc, mag);
-            let angle = F32x3::from(mahony.quat.to_euler());
+            let angle = mahony.quat.to_array();
             let measurements = ImuMeasurement {
                 acc,
                 gyro,
@@ -126,7 +149,7 @@ async fn main(spawner: Spawner) {
             let _ = CHANNEL.try_send(measurements);
         } else {
             mahony.update_imu(gyro, acc);
-            let angle = F32x3::from(mahony.quat.to_euler());
+            let angle = mahony.quat.to_array();
             let measurements = ImuMeasurement {
                 acc,
                 gyro,
@@ -149,7 +172,7 @@ async fn send_measurements_usb_task(mut class: CdcAcmClass<'static, Driver<'stat
     let mut buf = [0; 64];
     loop {
         class.wait_connection().await;
-        info!("Connected");
+        info!("Com port connected");
         let _n = class.read_packet(&mut buf).await;
         info!("Sending...");
         let _ = send_measurements(&mut class).await;
@@ -180,7 +203,7 @@ async fn send_measurements<'d, T: Instance + 'd>(
         let measurement = CHANNEL.receive().await;
 
         // Send measurements over serial port
-        let data: [u8; 48] = measurement.into();
+        let data: [u8; 52] = measurement.into();
         serial.write_packet(&data).await?;
     }
 }

@@ -2,7 +2,6 @@
 #![no_std]
 #![no_main]
 
-use defmt::info;
 use micromath::{
     vector::{F32x3, Vector, Vector2d, Vector3d},
     Quaternion,

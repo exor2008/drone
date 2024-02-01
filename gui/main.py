@@ -30,9 +30,9 @@ def update(event):
     global quat
 
     serial_port.write(b"Give")
-    m = np.frombuffer(serial_port.read(48), dtype=np.float32)
+    m = np.frombuffer(serial_port.read(52), dtype=np.float32)
 
-    # sum_acc += m[0:3]
+    sum_acc += m[0:3]
     sum_gyro += np.rad2deg(m[3:6])
 
     # print("acc", m[0:3])
@@ -40,7 +40,7 @@ def update(event):
     # print("mag", m[6:9])
     # print("angle", m[9:])
 
-    acc.roll_data(m[0:3])
+    acc.roll_data(sum_acc)
     gyro.roll_data(sum_gyro)
     mag.roll_data(m[6:9])
 
@@ -53,7 +53,8 @@ def update(event):
     #         m[0:3],
     #     )
 
-    quat = Quaternion.create_from_euler_angles(*m[9:], degrees=False)
+    quat = Quaternion(*m[9:])
+    # quat = Quaternion.create_from_euler_angles(*m[9:], degrees=False)
     # quat = Quaternion(*quat)
 
     rotate_cube(cube, quat)
@@ -101,6 +102,7 @@ def get_widget(grid, row, col, rect, offset):
 def get_3d(grid, row, col):
     view = grid.add_view(row=row, col=col, bgcolor="w")
     view.camera = "turntable"
+    view.camera.scale_factor = 1
     # view.camera = scene.cameras.ArcballCamera(parent=view.scene)
     cube = scene.Box(
         0.25, 0.25, 0.5, color="red", edge_color="black", parent=view.scene

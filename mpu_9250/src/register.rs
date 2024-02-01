@@ -27,6 +27,7 @@ pub enum Mpu9250Reg {
     FifoCountH = 0x72,
     FifoRw = 0x74,
     WhoAmI = 0x75,
+    XaOffsetH = 0x77,
 }
 
 impl Mpu9250Reg {
@@ -99,17 +100,8 @@ impl Default for AccelRange {
 
 impl AccelRange {
     /// Sensitivity is the measurement of the LSB.
-    pub fn get_sensitivity_g(&self) -> f32 {
-        return match *self {
-            AccelRange::G2 => 2.0,
-            AccelRange::G4 => 4.0,
-            AccelRange::G8 => 8.0,
-            AccelRange::G16 => 16.0,
-        } / (i16::MAX as f32 + 1.0);
-    }
-
     // Returns sensitivity in m/s/s.
-    pub fn get_sensitivity_mss(&self) -> f32 {
+    pub fn get_sensitivity_g(&self) -> f32 {
         // Repeat code from get_sensitivity_g to reduce floating point
         // precision loss from floating point math.
         return match *self {
@@ -117,8 +109,7 @@ impl AccelRange {
             AccelRange::G4 => 4.0,
             AccelRange::G8 => 8.0,
             AccelRange::G16 => 16.0,
-        } * G
-            / (i16::MAX as f32 + 1.0);
+        } / (i16::MAX as f32 + 1.0);
     }
 }
 
