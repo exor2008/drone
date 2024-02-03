@@ -16,6 +16,7 @@ use register::*;
 const ACC_ADDR: u8 = 0x68;
 const MAG_ADDR: u8 = 0x0C;
 const CALLIBRATION_SAMPLES: u16 = 2000;
+const CALLIBRATION_MAG_SAMPLES: u16 = 6000;
 
 pub trait Accelerometer {
     async fn acc(&mut self) -> Result<F32x3, Error>;
@@ -92,8 +93,9 @@ where
     acc_range: AccelRange,
     mag_factory_adjust: F32x3,
     mag_sensitivity: Sensitivity,
-    acc_offset: F32x3,
     acc_g: F32x3,
+    mag_hard_iron: F32x3,
+    mag_soft_iron: F32x3,
 }
 
 impl<'d, T> Mpu9250<'d, T, i2c::Async>
@@ -107,8 +109,9 @@ where
             acc_range: AccelRange::default(),
             mag_factory_adjust: F32x3::default(),
             mag_sensitivity: Sensitivity::default(),
-            acc_offset: F32x3::default(),
             acc_g: F32x3::from((9.8, 9.8, 9.8)),
+            mag_hard_iron: F32x3::default(),
+            mag_soft_iron: F32x3::from((1.0, 1.0, 1.0)),
         }
     }
 
@@ -135,10 +138,12 @@ where
         self.config_mag(SampleRate::Hz100, Sensitivity::Bit16)
             .await?;
 
+        info!("Sensor initialized");
+
         Ok(())
     }
 
-    pub async fn calibrate_gyro(&mut self) -> Result<(), Error> {
+    pub async fn calibrate_gyro(&mut self) -> Result<F32x3, Error> {
         // Prepare device for calibration
         // Low pass filter 184 Hz
         self.set_low_pass_filter(GyroDlpf::Hz184).await?;
@@ -162,12 +167,10 @@ where
         info!("Calibrating done.");
         info!("Gyro offset (m/s) {}", gyro.to_array());
 
-        self.set_gyro_offsets(gyro).await?;
-
-        Ok(())
+        Ok(gyro)
     }
 
-    pub async fn calibrate_acc_6_point(&mut self) -> Result<(), Error> {
+    pub async fn calibrate_acc_6_point(&mut self) -> Result<(F32x3, F32x3), Error> {
         // Prepare device for calibration
         // Low pass filter 184 Hz
         self.set_low_pass_filter(GyroDlpf::Hz184).await?;
@@ -178,6 +181,7 @@ where
         // Max rate 1000 Hz
         self.set_sample_rate(1000).await?;
 
+        info!("Calibrating accelerometer...");
         info!("Place Z up");
         Timer::after_secs(8).await;
         info!("Collecting...");
@@ -223,18 +227,73 @@ where
         let y_scale = (y_up.y - y_down.y) * 0.5;
         let z_scale = (z_up.z - z_down.z) * 0.5;
 
-        self.acc_offset = F32x3::from((x_offset, y_offset, z_offset));
-        self.acc_g = F32x3::from((x_scale, y_scale, z_scale));
+        let acc_offset = F32x3::from((x_offset, y_offset, z_offset));
+        let acc_g = F32x3::from((x_scale, y_scale, z_scale));
 
         info!(
             "6 point acc offset: {}, scale: {}",
-            self.acc_offset.to_array(),
-            self.acc_g.to_array()
+            acc_offset.to_array(),
+            acc_g.to_array()
         );
 
         // self.set_acc_offsets(acc).await?;
 
-        Ok(())
+        Ok((acc_offset, acc_g))
+    }
+
+    pub async fn calibrate_mag(&mut self) -> Result<(F32x3, F32x3), Error> {
+        info!("Calibrating magnitometer...");
+        // Bypass mode
+        self.enable_bypass().await?;
+
+        // Set magnetometer sensitivity and 100 Hz sample rate
+        self.config_mag(SampleRate::Hz100, Sensitivity::Bit16)
+            .await?;
+
+        info!("Rotate device over each degree for ~60 seconds.");
+        info!("Collecting...");
+
+        let mut timer = Ticker::every(Duration::from_millis(10));
+
+        let mut max = F32x3::from((f32::MIN, f32::MIN, f32::MIN));
+        let mut min = F32x3::from((f32::MAX, f32::MAX, f32::MAX));
+
+        for _ in 0..CALLIBRATION_MAG_SAMPLES {
+            let mag = self.mag().await?;
+
+            max.x = mag.x.max(max.x);
+            max.y = mag.y.max(max.y);
+            max.z = mag.z.max(max.z);
+
+            min.x = mag.x.min(min.x);
+            min.y = mag.y.min(min.y);
+            min.z = mag.z.min(min.z);
+
+            timer.next().await;
+        }
+
+        let offset_x = (max.x + min.x) * 0.5;
+        let offset_y = (max.y + min.y) * 0.5;
+        let offset_z = (max.z + min.z) * 0.5;
+
+        let offset = F32x3::from((offset_x, offset_y, offset_z));
+
+        let avg_delta_x = (max.x - min.x) * 0.5;
+        let avg_delta_y = (max.y - min.y) * 0.5;
+        let avg_delta_z = (max.z - min.z) * 0.5;
+
+        let avg_delta = (avg_delta_x + avg_delta_y + avg_delta_z) * 0.3333333333333333;
+
+        let scale_x = avg_delta / avg_delta_x;
+        let scale_y = avg_delta / avg_delta_y;
+        let scale_z = avg_delta / avg_delta_z;
+
+        let scale = F32x3::from((scale_x, scale_y, scale_z));
+
+        info!("Calibration finished");
+        info!("Hard iron offsets: {}", offset.to_array());
+        info!("Soft iron scale: {}", scale.to_array());
+        Ok((offset, scale))
     }
 
     async fn collect_acc(&mut self) -> Result<F32x3, Error> {
@@ -366,7 +425,10 @@ where
             .await?;
 
         let factory_adjust = F32x3::from_iter(buf.map(|v| ((v - 128) as f32) / 256.0 + 1.0));
-        info!("Mag factory adjustments: {}", factory_adjust.to_array());
+        info!(
+            "Magnitometer factory adjustments: {}",
+            factory_adjust.to_array()
+        );
 
         Ok(factory_adjust)
     }
@@ -469,7 +531,7 @@ where
 
     pub async fn get_acc_offsets(&mut self) -> Result<F32x3, Error> {
         let offsets = F32x3::from(self.get_unscaled_acc_offsets().await?);
-        let scale = self.acc_g * self.acc_range.get_sensitivity_g();
+        let scale = self.acc_g * AccelRange::G16.get_sensitivity_g(); //self.acc_range.get_sensitivity_g();
 
         let x = offsets.x * scale.x;
         let y = offsets.y * scale.y;
@@ -479,21 +541,19 @@ where
     }
 
     pub async fn set_acc_offsets(&mut self, offsets: F32x3) -> Result<(), Error> {
-        let factory = self.get_acc_offsets().await?;
-        let offsets = offsets + factory;
+        let factory = self.get_unscaled_acc_offsets().await?;
+        let scale = self.acc_g * AccelRange::G16.get_sensitivity_g();
 
-        let scale = self.acc_g * self.acc_range.get_sensitivity_g();
-        let inv_scale_x = 1.0 / scale.x;
-        let inv_scale_y = 1.0 / scale.y;
-        let inv_scale_z = 1.0 / scale.z;
+        let offset_x = (offsets.x / scale.x) as i16;
+        let offset_y = (offsets.y / scale.y) as i16;
+        let offset_z = (offsets.z / scale.z) as i16;
 
-        let offset_x = offsets.x * inv_scale_x;
-        let offset_y = offsets.y * inv_scale_y;
-        let offset_z = offsets.z * inv_scale_z;
+        let offsets = I16x3::from((offset_x, offset_y, offset_z));
+        let offsets = factory - offsets;
 
-        let x_acc: [u8; 2] = (offset_x as i16).to_be_bytes();
-        let y_acc: [u8; 2] = (offset_y as i16).to_be_bytes();
-        let z_acc: [u8; 2] = (offset_z as i16).to_be_bytes();
+        let x_acc: [u8; 2] = offsets.x.to_be_bytes();
+        let y_acc: [u8; 2] = offsets.y.to_be_bytes();
+        let z_acc: [u8; 2] = offsets.z.to_be_bytes();
 
         let data = [
             Mpu9250Reg::XaOffsetH.addr(),
@@ -516,6 +576,22 @@ where
     pub fn get_acc_g(&mut self) -> F32x3 {
         self.acc_g
     }
+
+    pub fn set_hard_iron(&mut self, hard_iron: F32x3) {
+        self.mag_hard_iron = hard_iron
+    }
+
+    pub fn set_soft_iron(&mut self, soft_iron: F32x3) {
+        self.mag_soft_iron = soft_iron
+    }
+
+    pub fn get_hard_iron(&mut self) -> F32x3 {
+        self.mag_hard_iron
+    }
+
+    pub fn get_soft_iron(&mut self) -> F32x3 {
+        self.mag_soft_iron
+    }
 }
 
 impl<'d, T> Accelerometer for Mpu9250<'d, T, i2c::Async>
@@ -533,9 +609,13 @@ where
         let y_acc = i16::from_be_bytes(acc[2..4].try_into().expect("Slice with incorrect length"));
         let z_acc = i16::from_be_bytes(acc[4..6].try_into().expect("Slice with incorrect length"));
 
-        let acc = F32x3::from((x_acc as f32, y_acc as f32, z_acc as f32));
+        let acc = F32x3::from((
+            sensetivity.x * x_acc as f32,
+            sensetivity.y * y_acc as f32,
+            sensetivity.z * z_acc as f32,
+        ));
 
-        Ok(acc * sensetivity)
+        Ok(acc)
     }
 }
 
@@ -591,6 +671,11 @@ where
         let x_mag = x_mag as f32 * x_adjust * mag_sens;
         let y_mag = y_mag as f32 * y_adjust * mag_sens;
         let z_mag = z_mag as f32 * z_adjust * mag_sens;
+
+        // Apply calibration
+        let x_mag = (x_mag - self.mag_hard_iron.x) * self.mag_soft_iron.x;
+        let y_mag = (y_mag - self.mag_hard_iron.y) * self.mag_soft_iron.y;
+        let z_mag = (z_mag - self.mag_hard_iron.z) * self.mag_soft_iron.z;
 
         Ok(F32x3::from((x_mag, y_mag, z_mag)))
     }

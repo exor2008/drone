@@ -35,12 +35,16 @@ async fn main(_spawner: Spawner) {
     mpu_9250.reset().await.unwrap();
 
     // calibrate gyro
-    mpu_9250.calibrate_gyro().await.unwrap();
+    // mpu_9250.calibrate_gyro().await.unwrap();
 
-    mpu_9250.calibrate_acc_6_point().await.unwrap();
+    // calibrate accelerometer
+    // mpu_9250.calibrate_acc_6_point().await.unwrap();
 
     // Initialize IMU
     mpu_9250.init().await.unwrap();
+
+    // calibrate mag
+    mpu_9250.calibrate_mag().await.unwrap();
 
     // Check health
     if !mpu_9250.check().await.unwrap() {

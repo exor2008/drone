@@ -9,8 +9,6 @@ use micromath::{
 
 #[derive(Debug)]
 pub struct Mahony {
-    /// Expected sampling period, in seconds.
-    sample_period: f32,
     /// Proportional filter gain constant.
     kp: f32,
     /// Integral filter gain constant.
@@ -24,7 +22,6 @@ pub struct Mahony {
 impl Default for Mahony {
     fn default() -> Mahony {
         Mahony {
-            sample_period: (1.0) / (1000.0),
             kp: 0.5,
             ki: 0.0,
             e_int: F32x3::default(),
@@ -34,9 +31,8 @@ impl Default for Mahony {
 }
 
 impl Mahony {
-    pub fn new(sample_period: f32, kp: f32, ki: f32) -> Self {
+    pub fn new(kp: f32, ki: f32) -> Self {
         Mahony {
-            sample_period,
             kp,
             ki,
             e_int: F32x3::default(),
@@ -46,7 +42,7 @@ impl Mahony {
 }
 
 impl Mahony {
-    pub fn update(&mut self, gyroscope: F32x3, accelerometer: F32x3, magnetometer: F32x3) {
+    pub fn update(&mut self, gyroscope: F32x3, accelerometer: F32x3, magnetometer: F32x3, dt: f32) {
         let q = &self.quat;
 
         // Normalize accelerometer measurement
@@ -77,7 +73,7 @@ impl Mahony {
 
         // Error is sum of cross product between estimated direction and measured direction of fields
         if self.ki > 0.0 {
-            self.e_int += e * self.sample_period;
+            self.e_int += e * dt;
         } else {
             self.e_int = F32x3::default()
         }
@@ -89,27 +85,22 @@ impl Mahony {
         let q_dot = self.quat * Quaternion::new(0.0, gyro.x, gyro.y, gyro.z) * 0.5;
 
         // Integrate to yield quaternion
-        let quat = self.quat + q_dot * self.sample_period;
+        let quat = self.quat + q_dot * dt;
 
         self.quat = quat.normalize();
     }
 
-    pub fn update_imu(&mut self, gyroscope: F32x3, accelerometer: F32x3) {
+    pub fn update_imu(&mut self, gyroscope: F32x3, accelerometer: F32x3, dt: f32) {
         let q = &self.quat;
 
         // Normalize accelerometer measurement
-        let acc_mag = accelerometer.magnitude();
-        let acc = if acc_mag == 0.0 {
-            F32x3::default()
-        } else {
-            accelerometer * (1.0 / acc_mag)
-        };
+        let acc = accelerometer.normalize();
 
         // #[rustfmt::skip]
         let v = F32x3::from((
-            2.0 * (q.w() * q.y() - q.z() * q.x()),
-            2.0 * (q.z() * q.w() + q.x() * q.y()),
-            q.z() * q.z() - q.w() * q.w() - q.x() * q.x() + q.y() * q.y(),
+            2.0 * (q.x() * q.z() - q.w() * q.y()),
+            2.0 * (q.w() * q.x() + q.y() * q.z()),
+            q.w() * q.w() - q.x() * q.x() - q.y() * q.y() + q.z() * q.z(),
         ));
 
         // cross(acc, v)
@@ -117,7 +108,7 @@ impl Mahony {
 
         // Error is sum of cross product between estimated direction and measured direction of fields
         if self.ki > 0.0 {
-            self.e_int += e * self.sample_period;
+            self.e_int += e * dt;
         } else {
             self.e_int = F32x3::default();
         }
@@ -129,7 +120,7 @@ impl Mahony {
         let q_dot = *q * Quaternion::new(0.0, gyro.x, gyro.y, gyro.z) * 0.5;
 
         // Integrate to yield quaternion
-        self.quat = (self.quat + q_dot * self.sample_period).normalize();
+        self.quat = (self.quat + q_dot * dt).normalize();
     }
 }
 
