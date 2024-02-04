@@ -4,6 +4,7 @@ import ahrs
 import numpy as np
 import serial
 from vispy import app, scene
+from vispy.io.stl import load_stl_binary
 from vispy.util.quaternion import Quaternion
 from vispy.visuals import transforms
 
@@ -41,8 +42,8 @@ def update(event):
     # print("mag", m[6:9])
     # print("angle", m[9:])
 
-    acc.roll_data(sum_acc)
-    gyro.roll_data(sum_gyro)
+    acc.roll_data(m[0:3])
+    gyro.roll_data(np.rad2deg(m[3:6]))
     mag.roll_data(m[6:9])
 
     # if m[6:9].any():
@@ -100,12 +101,76 @@ def get_position_view(grid, row, col):
     view = grid.add_view(row=row, col=col, row_span=4, bgcolor=BGCOLOR)
     view.camera = "turntable"
     view.camera.scale_factor = 1
-    cube = scene.Box(
-        0.25, 0.25, 0.5, color="red", edge_color="black", parent=view.scene
+
+    mesh_data = load_stl_binary(open(r".\resources\rocket.stl", mode="rb"))
+    cube = scene.visuals.Mesh(
+        mesh_data["vertices"],
+        mesh_data["faces"],
+        color=(0.2, 0.3, 0.2, 1),
+        shading="smooth",
+        parent=view.scene,
     )
     cube.transform = transforms.MatrixTransform()
     cube.transform.translate((0, 0))
+
     return cube
+
+
+def titles():
+    scene.visuals.Text(
+        "Accelerometer",
+        pos=(10, 10),
+        color="white",
+        font_size=12,
+        bold=False,
+        anchor_x="left",
+        anchor_y="bottom",
+        parent=canvas.scene,
+    )
+
+    scene.visuals.Text(
+        "Gyro",
+        pos=(10, 125),
+        color="white",
+        font_size=12,
+        bold=False,
+        anchor_x="left",
+        anchor_y="bottom",
+        parent=canvas.scene,
+    )
+
+    scene.visuals.Text(
+        "Magnetometer",
+        pos=(10, 245),
+        color="white",
+        font_size=12,
+        bold=False,
+        anchor_x="left",
+        anchor_y="bottom",
+        parent=canvas.scene,
+    )
+
+    scene.visuals.Text(
+        "3D",
+        pos=(10, 360),
+        color="white",
+        font_size=12,
+        bold=False,
+        anchor_x="left",
+        anchor_y="bottom",
+        parent=canvas.scene,
+    )
+
+    scene.visuals.Text(
+        "3D Magnitometer",
+        pos=(800, 360),
+        color="white",
+        font_size=12,
+        bold=False,
+        anchor_x="left",
+        anchor_y="bottom",
+        parent=canvas.scene,
+    )
 
 
 def get_magnitometer_view(grid, row, col):
@@ -135,6 +200,7 @@ if __name__ == "__main__":
     mag = get_plot_view(grid, 2, 0, MAG_CAMERA_VIEW, [0, 0, 0])
     cube = get_position_view(grid, 3, 0)
     mag_markers = get_magnitometer_view(grid, 3, 1)
+    titles()
 
     timer = app.Timer("auto", connect=update, start=True)
     timer.start()
