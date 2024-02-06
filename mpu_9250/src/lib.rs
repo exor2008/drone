@@ -610,9 +610,9 @@ where
         let z_acc = i16::from_be_bytes(acc[4..6].try_into().expect("Slice with incorrect length"));
 
         let acc = F32x3::from((
-            sensetivity.x * x_acc as f32,
+            -sensetivity.x * x_acc as f32,
             sensetivity.y * y_acc as f32,
-            sensetivity.z * z_acc as f32,
+            -sensetivity.z * z_acc as f32,
         ));
 
         Ok(acc)
@@ -642,7 +642,7 @@ where
         let y_gyro = scale * y_gyro as f32;
         let z_gyro = scale * z_gyro as f32;
 
-        Ok(F32x3::from((x_gyro, y_gyro, z_gyro)))
+        Ok(F32x3::from((-x_gyro, y_gyro, -z_gyro)))
     }
 }
 
@@ -677,7 +677,7 @@ where
         let y_mag = (y_mag - self.mag_hard_iron.y) * self.mag_soft_iron.y;
         let z_mag = (z_mag - self.mag_hard_iron.z) * self.mag_soft_iron.z;
 
-        Ok(F32x3::from((x_mag, y_mag, z_mag)))
+        Ok(F32x3::from((-x_mag, -y_mag, -z_mag)))
     }
 
     async fn is_mag_ready(&mut self) -> Result<bool, Error> {

@@ -10,16 +10,17 @@ from vispy.visuals import transforms
 
 N = 1000
 ACC_CAMERA_VIEW = (-0.1, -10.0, 1.2, 50.0)
-GYRO_CAMERA_VIEW = (-0.1, -1000.0, 1.2, 4000.0)
+GYRO_CAMERA_VIEW = (-0.1, -100.0, 1.2, 400.0)
 MAG_CAMERA_VIEW = (-0.1, -100.0, 1.2, 300.0)
 BGCOLOR = "#828893"
 
 sum_gyro = np.zeros(3)
 sum_acc = np.zeros(3)
 
-# mahony = ahrs.filters.Mahony(frequency=10.0, k_P=0.5, k_I=0.01)
+# mahony = ahrs.filters.Mahony(frequency=20.0, k_P=0.4, k_I=0.01)
 
 quat = np.asarray([1.0, 0.0, 0.0, 0.0])
+quat_ar = np.asarray([1.0, 0.0, 0.0, 0.0])
 cube = None
 mag_markers = None
 mag_raw = []
@@ -30,6 +31,8 @@ def update(event):
     global sum_acc
     global quat
     global mag_raw
+    global quat_ar
+    global rotation
 
     serial_port.write(b"Give")
     m = np.frombuffer(serial_port.read(52), dtype=np.float32)
@@ -47,17 +50,28 @@ def update(event):
     mag.roll_data(m[6:9])
 
     # if m[6:9].any():
-    #     quat = mahony.updateMARG(quat, np.deg2rad(m[3:6]), m[0:3], m[6:9])
+    #     quat_ar = mahony.updateMARG(quat_ar, m[3:6], m[0:3], m[6:9])
     # else:
-    #     quat = mahony.updateIMU(
-    #         quat,
-    #         np.deg2rad(m[3:6]),
+    #     quat_ar = mahony.updateIMU(
+    #         quat_ar,
+    #         m[3:6],
     #         m[0:3],
     #     )
-    # print(quat)
-    # quat = Quaternion(*quat)
+    # quat = Quaternion(
+    #     quat_ar[1],
+    #     quat_ar[2],
+    #     quat_ar[3],
+    #     quat_ar[0],
+    # )
+    # quat = Quaternion(*quat_ar)
 
-    quat = Quaternion(*m[9:])
+    # quat = Quaternion(m[9], m[10], m[11], m[12], normalize=False)
+    # quat = Quaternion.create_from_euler_angles(m[9], m[10], m[11])
+
+    # quat = Quaternion(m[10], m[11], m[12], m[9], False)
+    quat = Quaternion(*m[9:], False)
+
+    # print(quat)
 
     rotate_cube(cube, quat)
 
@@ -101,6 +115,8 @@ def get_position_view(grid, row, col):
     view = grid.add_view(row=row, col=col, row_span=4, bgcolor=BGCOLOR)
     view.camera = "turntable"
     view.camera.scale_factor = 1
+
+    _gridlines = scene.GridLines(color=(0.5, 0.5, 0.5, 1.0), parent=view.scene)
 
     mesh_data = load_stl_binary(open(r".\resources\rocket.stl", mode="rb"))
     cube = scene.visuals.Mesh(
@@ -179,6 +195,8 @@ def get_magnitometer_view(grid, row, col):
     view.camera.scale_factor = 5
     view.camera.zoom_factor = 5
 
+    _gridlines = scene.GridLines(color=(0.5, 0.5, 0.5, 1.0), parent=view.scene)
+
     markers = scene.Markers()
     markers.transform = transforms.MatrixTransform()
     markers.transform.translate((0, 0))
@@ -188,7 +206,7 @@ def get_magnitometer_view(grid, row, col):
 
 
 def rotate_cube(cube, quat):
-    cube.transform.matrix = quat.get_matrix()
+    cube.transform.matrix = quat.get_matrix().T
 
 
 if __name__ == "__main__":
@@ -196,7 +214,7 @@ if __name__ == "__main__":
     grid = canvas.central_widget.add_grid()
 
     acc = get_plot_view(grid, 0, 0, ACC_CAMERA_VIEW, [0, 0, 0])
-    gyro = get_plot_view(grid, 1, 0, GYRO_CAMERA_VIEW, [0, 1000, 2000])
+    gyro = get_plot_view(grid, 1, 0, GYRO_CAMERA_VIEW, [0, 100, 200])
     mag = get_plot_view(grid, 2, 0, MAG_CAMERA_VIEW, [0, 0, 0])
     cube = get_position_view(grid, 3, 0)
     mag_markers = get_magnitometer_view(grid, 3, 1)
