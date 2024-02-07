@@ -117,6 +117,39 @@ def get_position_view(grid, row, col):
     view.camera.scale_factor = 1
 
     _gridlines = scene.GridLines(color=(0.5, 0.5, 0.5, 1.0), parent=view.scene)
+    scene.visuals.Text(
+        "N",
+        pos=(-1.0, 0),
+        color=(0.8, 0.8, 0.8, 1),
+        parent=view.scene,
+        font_size=50,
+        depth_test=True,
+    )
+
+    scene.visuals.Text(
+        "S",
+        pos=(1.0, 0),
+        color=(0.8, 0.8, 0.8, 1),
+        parent=view.scene,
+        font_size=50,
+        depth_test=True,
+    )
+    scene.visuals.Text(
+        "E",
+        pos=(0, 1.0),
+        color=(0.8, 0.8, 0.8, 1),
+        parent=view.scene,
+        font_size=50,
+        depth_test=True,
+    )
+    scene.visuals.Text(
+        "W",
+        pos=(0, -1.0),
+        color=(0.8, 0.8, 0.8, 1),
+        parent=view.scene,
+        font_size=50,
+        depth_test=True,
+    )
 
     mesh_data = load_stl_binary(open(r".\resources\rocket.stl", mode="rb"))
     cube = scene.visuals.Mesh(
