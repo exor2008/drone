@@ -69,7 +69,7 @@ def update(event):
     # quat = Quaternion.create_from_euler_angles(m[9], m[10], m[11])
 
     # quat = Quaternion(m[10], m[11], m[12], m[9], False)
-    quat = Quaternion(*m[9:], False)
+    quat = Quaternion(*m[9:], False).conjugate()
 
     # print(quat)
 
@@ -206,7 +206,7 @@ def get_magnitometer_view(grid, row, col):
 
 
 def rotate_cube(cube, quat):
-    cube.transform.matrix = quat.get_matrix().T
+    cube.transform.matrix = quat.get_matrix()
 
 
 if __name__ == "__main__":
