@@ -105,7 +105,7 @@ async fn main(spawner: Spawner) {
     // Set calibrated acc offsets values
     // Offsets added to factory offsets
     mpu_9250
-        .set_acc_offsets(F32x3::from((0.35072445, 0.0015323068, -0.1035959)))
+        .set_acc_offsets(F32x3::from((0.35072445, 0.0, -0.1035959))) //y was 0.15323068
         .await
         .unwrap();
 
