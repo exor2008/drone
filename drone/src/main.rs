@@ -86,8 +86,9 @@ async fn main(spawner: Spawner) {
 
     let sda = p.PIN_16;
     let scl = p.PIN_17;
-    let sensor: i2c::I2c<'_, I2C0, Async> =
-        i2c::I2c::new_async(p.I2C0, scl, sda, IrqsI2c, ConfigI2c::default());
+    let mut conf = ConfigI2c::default();
+    conf.frequency = 1_000_000;
+    let sensor: i2c::I2c<'_, I2C0, Async> = i2c::I2c::new_async(p.I2C0, scl, sda, IrqsI2c, conf);
 
     let mut mpu_9250 = Mpu9250::new_async(sensor);
 
@@ -142,19 +143,19 @@ async fn main(spawner: Spawner) {
     }
 
     // Creaate Mahony data fusion
-    let mut mahony = Mahony::new(0.4, 0.01);
+    let mut mahony = Mahony::new(1.3, 0.01);
 
-    let mut ticket = Ticker::every(Duration::from_millis(3));
-    let mut timer = Instant::now();
+    let mut ticket = Ticker::every(Duration::from_millis(1)); // 1 kHz
+    let mut now = Instant::now();
     loop {
         let acc = mpu_9250.acc().await.unwrap();
         let gyro = mpu_9250.gyro().await.unwrap() * PI_180;
 
         if mpu_9250.is_mag_ready().await.unwrap() {
             let mag = mpu_9250.mag().await.unwrap();
-            let dt = timer.elapsed().as_micros() as f32 / 1_000_000.0;
+            let dt = now.elapsed().as_micros() as f32 / 1_000_000.0;
             mahony.update(gyro, acc, mag, dt);
-            timer = Instant::now();
+            now = Instant::now();
             let angle = mahony.quat.to_array();
             let measurements = ImuMeasurement {
                 acc,
@@ -164,9 +165,9 @@ async fn main(spawner: Spawner) {
             };
             let _ = CHANNEL.try_send(measurements);
         } else {
-            let dt = timer.elapsed().as_micros() as f32 / 1_000_000.0;
+            let dt = now.elapsed().as_micros() as f32 / 1_000_000.0;
             mahony.update_imu(gyro, acc, dt);
-            timer = Instant::now();
+            now = Instant::now();
             let angle = mahony.quat.to_array();
             let measurements = ImuMeasurement {
                 acc,
