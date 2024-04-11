@@ -69,7 +69,9 @@ def update(event):
     # quat = Quaternion.create_from_euler_angles(m[9], m[10], m[11])
 
     # quat = Quaternion(m[10], m[11], m[12], m[9], False)
-    quat = Quaternion(*m[9:], False).conjugate()
+
+    # w, x, y, z
+    quat = Quaternion(m[12], *m[9:12], False).conjugate()
 
     # print(quat)
 

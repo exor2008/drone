@@ -3,13 +3,11 @@
 #![feature(impl_trait_in_assoc_type)]
 #![allow(async_fn_in_trait)]
 
-use core::mem::{size_of, transmute};
 use defmt::info;
 use embassy_rp::i2c::{self, Error, Instance, Mode};
 use embassy_time::{Duration, Ticker, Timer};
 use embedded_hal_async::i2c::I2c;
-use micromath::vector::{F32x3, I16x3};
-
+use nalgebra::{Vector3, Vector4};
 mod register;
 use register::*;
 
@@ -19,15 +17,15 @@ const CALLIBRATION_SAMPLES: u16 = 2000;
 const CALLIBRATION_MAG_SAMPLES: u16 = 6000;
 
 pub trait Accelerometer {
-    async fn acc(&mut self) -> Result<F32x3, Error>;
+    async fn acc(&mut self) -> Result<Vector3<f32>, Error>;
 }
 
 pub trait Gyro {
-    async fn gyro(&mut self) -> Result<F32x3, Error>;
+    async fn gyro(&mut self) -> Result<Vector3<f32>, Error>;
 }
 
 pub trait Magnetometer {
-    async fn mag(&mut self) -> Result<F32x3, Error>;
+    async fn mag(&mut self) -> Result<Vector3<f32>, Error>;
     async fn is_mag_ready(&mut self) -> Result<bool, Error>;
 }
 pub trait Barometer {
@@ -36,48 +34,37 @@ pub trait Barometer {
 
 #[derive(Debug, Clone, Copy)]
 pub struct ImuMeasurement {
-    pub acc: F32x3,
-    pub gyro: F32x3,
-    pub mag: F32x3,
-    pub angle: [f32; 4],
+    pub acc: Vector3<f32>,
+    pub gyro: Vector3<f32>,
+    pub mag: Vector3<f32>,
+    pub quat: Vector4<f32>,
 }
-
-type Float3 = [u8; 3 * size_of::<f32>()];
-type Float4 = [u8; 4 * size_of::<f32>()];
 
 impl Into<[u8; 52]> for ImuMeasurement {
     fn into(self) -> [u8; 52] {
         let mut data = [0u8; 52];
-        let acc = self.acc.to_array();
-        let gyro = self.gyro.to_array();
-        let mag = self.mag.to_array();
-
-        let mut buff3f: &Float3;
-        let buff4f: &Float4;
 
         unsafe {
-            buff3f = transmute::<&[f32; 3], &Float3>(&acc);
-        };
-        let target = &mut data[0..12];
-        target.copy_from_slice(buff3f);
+            // acc
+            let (_, buff, _) = self.acc.as_slice().align_to::<u8>();
+            let target = &mut data[0..12];
+            target.copy_from_slice(buff);
 
-        unsafe {
-            buff3f = transmute::<&[f32; 3], &Float3>(&gyro);
-        };
-        let target = &mut data[12..24];
-        target.copy_from_slice(buff3f);
+            // gyro
+            let (_, buff, _) = self.gyro.as_slice().align_to::<u8>();
+            let target = &mut data[12..24];
+            target.copy_from_slice(buff);
 
-        unsafe {
-            buff3f = transmute::<&[f32; 3], &Float3>(&mag);
-        };
-        let target = &mut data[24..36];
-        target.copy_from_slice(buff3f);
+            // mag
+            let (_, buff, _) = self.mag.as_slice().align_to::<u8>();
+            let target = &mut data[24..36];
+            target.copy_from_slice(buff);
 
-        unsafe {
-            buff4f = transmute::<&[f32; 4], &Float4>(&self.angle);
-        };
-        let target = &mut data[36..52];
-        target.copy_from_slice(buff4f);
+            // quat x, y, z, w
+            let (_, buff, _) = self.quat.as_slice().align_to::<u8>();
+            let target = &mut data[36..52];
+            target.copy_from_slice(buff);
+        }
 
         data
     }
@@ -91,11 +78,11 @@ where
     i2c: i2c::I2c<'d, T, M>,
     gyro_range: GyroRange,
     acc_range: AccelRange,
-    mag_factory_adjust: F32x3,
+    mag_factory_adjust: Vector3<f32>,
     mag_sensitivity: Sensitivity,
-    acc_g: F32x3,
-    mag_hard_iron: F32x3,
-    mag_soft_iron: F32x3,
+    acc_g: Vector3<f32>,
+    mag_hard_iron: Vector3<f32>,
+    mag_soft_iron: Vector3<f32>,
 }
 
 impl<'d, T> Mpu9250<'d, T, i2c::Async>
@@ -107,11 +94,11 @@ where
             i2c,
             gyro_range: GyroRange::default(),
             acc_range: AccelRange::default(),
-            mag_factory_adjust: F32x3::default(),
+            mag_factory_adjust: Vector3::default(),
             mag_sensitivity: Sensitivity::default(),
-            acc_g: F32x3::from((9.8, 9.8, 9.8)),
-            mag_hard_iron: F32x3::default(),
-            mag_soft_iron: F32x3::from((1.0, 1.0, 1.0)),
+            acc_g: Vector3::from([9.8, 9.8, 9.8]),
+            mag_hard_iron: Vector3::default(),
+            mag_soft_iron: Vector3::from([1.0, 1.0, 1.0]),
         }
     }
 
@@ -143,7 +130,7 @@ where
         Ok(())
     }
 
-    pub async fn calibrate_gyro(&mut self) -> Result<F32x3, Error> {
+    pub async fn calibrate_gyro(&mut self) -> Result<Vector3<f32>, Error> {
         // Prepare device for calibration
         // Low pass filter 184 Hz
         self.set_low_pass_filter(GyroDlpf::Hz184).await?;
@@ -154,7 +141,7 @@ where
         // Max rate 1000 Hz
         self.set_sample_rate(1000).await?;
 
-        let mut gyro = F32x3::default();
+        let mut gyro = Vector3::default();
 
         info!("Calibrating gyro...");
         let mut timer = Ticker::every(Duration::from_millis(1));
@@ -165,12 +152,13 @@ where
 
         gyro = gyro * (1.0 / CALLIBRATION_SAMPLES as f32);
         info!("Calibrating done.");
-        info!("Gyro offset (m/s) {}", gyro.to_array());
+
+        info!("Gyro offset (m/s) {}", gyro.as_slice());
 
         Ok(gyro)
     }
 
-    pub async fn calibrate_acc_6_point(&mut self) -> Result<(F32x3, F32x3), Error> {
+    pub async fn calibrate_acc_6_point(&mut self) -> Result<(Vector3<f32>, Vector3<f32>), Error> {
         // Prepare device for calibration
         // Low pass filter 184 Hz
         self.set_low_pass_filter(GyroDlpf::Hz184).await?;
@@ -212,12 +200,12 @@ where
         info!("Collecting...");
         let y_down = self.collect_acc().await?;
 
-        info!("Z up: {}", z_up.to_array());
-        info!("Z down: {}", z_down.to_array());
-        info!("X up: {}", x_up.to_array());
-        info!("X down: {}", x_down.to_array());
-        info!("Y up: {}", y_up.to_array());
-        info!("Y down: {}", y_down.to_array());
+        info!("Z up: {}", z_up.as_slice());
+        info!("Z down: {}", z_down.as_slice());
+        info!("X up: {}", x_up.as_slice());
+        info!("X down: {}", x_down.as_slice());
+        info!("Y up: {}", y_up.as_slice());
+        info!("Y down: {}", y_down.as_slice());
 
         let x_offset = (y_up.x + y_down.x + z_up.x + z_down.x) * 0.25;
         let y_offset = (x_up.y + x_down.y + z_up.y + z_down.y) * 0.25;
@@ -227,13 +215,13 @@ where
         let y_scale = (y_up.y - y_down.y) * 0.5;
         let z_scale = (z_up.z - z_down.z) * 0.5;
 
-        let acc_offset = F32x3::from((x_offset, y_offset, z_offset));
-        let acc_g = F32x3::from((x_scale, y_scale, z_scale));
+        let acc_offset = Vector3::from([x_offset, y_offset, z_offset]);
+        let acc_g = Vector3::from([x_scale, y_scale, z_scale]);
 
         info!(
             "6 point acc offset: {}, scale: {}",
-            acc_offset.to_array(),
-            acc_g.to_array()
+            acc_offset.as_slice(),
+            acc_g.as_slice()
         );
 
         // self.set_acc_offsets(acc).await?;
@@ -241,7 +229,7 @@ where
         Ok((acc_offset, acc_g))
     }
 
-    pub async fn calibrate_mag(&mut self) -> Result<(F32x3, F32x3), Error> {
+    pub async fn calibrate_mag(&mut self) -> Result<(Vector3<f32>, Vector3<f32>), Error> {
         info!("Calibrating magnitometer...");
         // Bypass mode
         self.enable_bypass().await?;
@@ -255,8 +243,8 @@ where
 
         let mut timer = Ticker::every(Duration::from_millis(10));
 
-        let mut max = F32x3::from((f32::MIN, f32::MIN, f32::MIN));
-        let mut min = F32x3::from((f32::MAX, f32::MAX, f32::MAX));
+        let mut max = Vector3::from([f32::MIN, f32::MIN, f32::MIN]);
+        let mut min = Vector3::from([f32::MAX, f32::MAX, f32::MAX]);
 
         for _ in 0..CALLIBRATION_MAG_SAMPLES {
             let mag = self.mag().await?;
@@ -276,7 +264,7 @@ where
         let offset_y = (max.y + min.y) * 0.5;
         let offset_z = (max.z + min.z) * 0.5;
 
-        let offset = F32x3::from((offset_x, offset_y, offset_z));
+        let offset = Vector3::from([offset_x, offset_y, offset_z]);
 
         let avg_delta_x = (max.x - min.x) * 0.5;
         let avg_delta_y = (max.y - min.y) * 0.5;
@@ -288,16 +276,16 @@ where
         let scale_y = avg_delta / avg_delta_y;
         let scale_z = avg_delta / avg_delta_z;
 
-        let scale = F32x3::from((scale_x, scale_y, scale_z));
+        let scale = Vector3::from([scale_x, scale_y, scale_z]);
 
         info!("Calibration finished");
-        info!("Hard iron offsets: {}", offset.to_array());
-        info!("Soft iron scale: {}", scale.to_array());
+        info!("Hard iron offsets: {}", offset.as_slice());
+        info!("Soft iron scale: {}", scale.as_slice());
         Ok((offset, scale))
     }
 
-    async fn collect_acc(&mut self) -> Result<F32x3, Error> {
-        let mut acc = F32x3::default();
+    async fn collect_acc(&mut self) -> Result<Vector3<f32>, Error> {
+        let mut acc = Vector3::default();
 
         let mut timer = Ticker::every(Duration::from_millis(1));
         for _ in 0..CALLIBRATION_SAMPLES {
@@ -402,7 +390,7 @@ where
         Ok(())
     }
 
-    pub async fn read_sensitivity_adjustment(&mut self) -> Result<F32x3, Error> {
+    pub async fn read_sensitivity_adjustment(&mut self) -> Result<Vector3<f32>, Error> {
         // Power down mag before mode switch
         self.write(
             MAG_ADDR,
@@ -424,10 +412,10 @@ where
         self.read(MAG_ADDR, &[Ak8963Reg::Asax.addr()], &mut buf)
             .await?;
 
-        let factory_adjust = F32x3::from_iter(buf.map(|v| ((v - 128) as f32) / 256.0 + 1.0));
+        let factory_adjust = Vector3::from_iterator(buf.map(|v| ((v - 128) as f32) / 256.0 + 1.0));
         info!(
             "Magnitometer factory adjustments: {}",
-            factory_adjust.to_array()
+            factory_adjust.as_slice()
         );
 
         Ok(factory_adjust)
@@ -473,7 +461,7 @@ where
         Ok(buffer[0] == 0x71 && buffer[1] == 0x48)
     }
 
-    pub async fn set_gyro_offsets(&mut self, offsets: F32x3) -> Result<(), Error> {
+    pub async fn set_gyro_offsets(&mut self, offsets: Vector3<f32>) -> Result<(), Error> {
         // Divide by 4 to get 32.9 LSB per deg/s to conform to expected bias
         // input format.
         // Biases are additive, so change sign on
@@ -500,7 +488,7 @@ where
         Ok(())
     }
 
-    pub async fn get_unscaled_gyro_offsets(&mut self) -> Result<I16x3, Error> {
+    pub async fn get_unscaled_gyro_offsets(&mut self) -> Result<Vector3<i16>, Error> {
         let mut gyro = [0u8; 6];
 
         self.read(ACC_ADDR, &[Mpu9250Reg::XgOffsetH.addr()], &mut gyro)
@@ -513,10 +501,10 @@ where
         let z_gyro =
             i16::from_be_bytes(gyro[4..6].try_into().expect("Slice with incorrect length"));
 
-        Ok(I16x3::from((x_gyro, y_gyro, z_gyro)))
+        Ok(Vector3::from([x_gyro, y_gyro, z_gyro]))
     }
 
-    pub async fn get_unscaled_acc_offsets(&mut self) -> Result<I16x3, Error> {
+    pub async fn get_unscaled_acc_offsets(&mut self) -> Result<Vector3<i16>, Error> {
         let mut acc = [0u8; 6];
 
         self.read(ACC_ADDR, &[Mpu9250Reg::XaOffsetH.addr()], &mut acc)
@@ -526,21 +514,21 @@ where
         let y_acc = i16::from_be_bytes(acc[2..4].try_into().expect("Slice with incorrect length"));
         let z_acc = i16::from_be_bytes(acc[4..6].try_into().expect("Slice with incorrect length"));
 
-        Ok(I16x3::from((x_acc, y_acc, z_acc)))
+        Ok(Vector3::from([x_acc, y_acc, z_acc]))
     }
 
-    pub async fn get_acc_offsets(&mut self) -> Result<F32x3, Error> {
-        let offsets = F32x3::from(self.get_unscaled_acc_offsets().await?);
+    pub async fn get_acc_offsets(&mut self) -> Result<Vector3<f32>, Error> {
+        let offsets = Vector3::from(self.get_unscaled_acc_offsets().await?);
         let scale = self.acc_g * AccelRange::G16.get_sensitivity_g(); //self.acc_range.get_sensitivity_g();
 
-        let x = offsets.x * scale.x;
-        let y = offsets.y * scale.y;
-        let z = offsets.z * scale.z;
+        let x = offsets.x as f32 * scale.x;
+        let y = offsets.y as f32 * scale.y;
+        let z = offsets.z as f32 * scale.z;
 
-        Ok(F32x3::from((x, y, z)))
+        Ok(Vector3::from([x, y, z]))
     }
 
-    pub async fn set_acc_offsets(&mut self, offsets: F32x3) -> Result<(), Error> {
+    pub async fn set_acc_offsets(&mut self, offsets: Vector3<f32>) -> Result<(), Error> {
         let factory = self.get_unscaled_acc_offsets().await?;
         let scale = self.acc_g * AccelRange::G16.get_sensitivity_g();
 
@@ -548,7 +536,7 @@ where
         let offset_y = (offsets.y / scale.y) as i16;
         let offset_z = (offsets.z / scale.z) as i16;
 
-        let offsets = I16x3::from((offset_x, offset_y, offset_z));
+        let offsets = Vector3::from([offset_x, offset_y, offset_z]);
         let offsets = factory - offsets;
 
         let x_acc: [u8; 2] = offsets.x.to_be_bytes();
@@ -569,27 +557,27 @@ where
         Ok(())
     }
 
-    pub fn set_acc_g(&mut self, g: F32x3) {
+    pub fn set_acc_g(&mut self, g: Vector3<f32>) {
         self.acc_g = g;
     }
 
-    pub fn get_acc_g(&mut self) -> F32x3 {
+    pub fn get_acc_g(&mut self) -> Vector3<f32> {
         self.acc_g
     }
 
-    pub fn set_hard_iron(&mut self, hard_iron: F32x3) {
+    pub fn set_hard_iron(&mut self, hard_iron: Vector3<f32>) {
         self.mag_hard_iron = hard_iron
     }
 
-    pub fn set_soft_iron(&mut self, soft_iron: F32x3) {
+    pub fn set_soft_iron(&mut self, soft_iron: Vector3<f32>) {
         self.mag_soft_iron = soft_iron
     }
 
-    pub fn get_hard_iron(&mut self) -> F32x3 {
+    pub fn get_hard_iron(&mut self) -> Vector3<f32> {
         self.mag_hard_iron
     }
 
-    pub fn get_soft_iron(&mut self) -> F32x3 {
+    pub fn get_soft_iron(&mut self) -> Vector3<f32> {
         self.mag_soft_iron
     }
 }
@@ -598,7 +586,7 @@ impl<'d, T> Accelerometer for Mpu9250<'d, T, i2c::Async>
 where
     T: Instance,
 {
-    async fn acc(&mut self) -> Result<F32x3, Error> {
+    async fn acc(&mut self) -> Result<Vector3<f32>, Error> {
         let mut acc = [0u8; 6];
 
         self.read(ACC_ADDR, &[Mpu9250Reg::AccelXoutH.addr()], &mut acc)
@@ -609,11 +597,11 @@ where
         let y_acc = i16::from_be_bytes(acc[2..4].try_into().expect("Slice with incorrect length"));
         let z_acc = i16::from_be_bytes(acc[4..6].try_into().expect("Slice with incorrect length"));
 
-        let acc = F32x3::from((
+        let acc = Vector3::from([
             -sensetivity.x * x_acc as f32,
             -sensetivity.y * y_acc as f32,
             sensetivity.z * z_acc as f32,
-        ));
+        ]);
 
         Ok(acc)
     }
@@ -623,7 +611,7 @@ impl<'d, T> Gyro for Mpu9250<'d, T, i2c::Async>
 where
     T: Instance,
 {
-    async fn gyro(&mut self) -> Result<F32x3, Error> {
+    async fn gyro(&mut self) -> Result<Vector3<f32>, Error> {
         let mut gyro = [0u8; 6];
 
         // Gyro X low
@@ -642,7 +630,7 @@ where
         let y_gyro = scale * y_gyro as f32;
         let z_gyro = scale * z_gyro as f32;
 
-        Ok(F32x3::from((-x_gyro, -y_gyro, z_gyro)))
+        Ok(Vector3::from([-x_gyro, -y_gyro, z_gyro]))
     }
 }
 
@@ -650,7 +638,7 @@ impl<'d, T> Magnetometer for Mpu9250<'d, T, i2c::Async>
 where
     T: Instance,
 {
-    async fn mag(&mut self) -> Result<F32x3, Error> {
+    async fn mag(&mut self) -> Result<Vector3<f32>, Error> {
         let mut mag = [0u8; 6];
 
         // Mag X low
@@ -666,7 +654,7 @@ where
 
         let mag_sens = self.mag_sensitivity.get_sensetivity();
 
-        let [x_adjust, y_adjust, z_adjust] = self.mag_factory_adjust.to_array();
+        let [x_adjust, y_adjust, z_adjust] = self.mag_factory_adjust.into();
 
         let x_mag = x_mag as f32 * x_adjust * mag_sens;
         let y_mag = y_mag as f32 * y_adjust * mag_sens;
@@ -677,7 +665,7 @@ where
         let y_mag = (y_mag - self.mag_hard_iron.y) * self.mag_soft_iron.y;
         let z_mag = (z_mag - self.mag_hard_iron.z) * self.mag_soft_iron.z;
 
-        Ok(F32x3::from((y_mag, x_mag, -z_mag)))
+        Ok(Vector3::from([y_mag, x_mag, -z_mag]))
     }
 
     async fn is_mag_ready(&mut self) -> Result<bool, Error> {

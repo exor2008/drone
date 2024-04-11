@@ -10,7 +10,8 @@ use embassy_rp::bind_interrupts;
 // use embassy_rp::gpio::{Input, Level, Output};
 use embassy_rp::i2c::{self, Async, Config as ConfigI2c, InterruptHandler as InterruptHandlerI2c};
 use embassy_rp::peripherals::I2C0;
-use mpu_9250::Mpu9250;
+use embassy_time::Instant;
+use mpu_9250::{Accelerometer, Mpu9250};
 use panic_probe as _;
 
 bind_interrupts!(struct IrqsI2c {
@@ -44,10 +45,28 @@ async fn main(_spawner: Spawner) {
     mpu_9250.init().await.unwrap();
 
     // calibrate mag
-    mpu_9250.calibrate_mag().await.unwrap();
+    // mpu_9250.calibrate_mag().await.unwrap();
 
     // Check health
     if !mpu_9250.check().await.unwrap() {
         crate::panic!("IMU Sensor is not MPU 9250");
+    }
+
+    let now = Instant::now();
+    let mut times = [0; 100];
+    let mut xs = [0.0; 100];
+    // times[0] = now.as_micros();
+    let mut i = 0;
+    loop {
+        if i < 100 {
+            times[i] = now.elapsed().as_millis();
+            let acc = mpu_9250.acc().await.unwrap();
+            xs[i] = acc.x;
+            i += 1;
+        }
+        if i == 99 {
+            info!("{}", times);
+            info!("{}", xs);
+        }
     }
 }

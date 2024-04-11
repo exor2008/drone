@@ -3,7 +3,7 @@
 #![feature(type_alias_impl_trait)]
 #![feature(slice_flatten)]
 
-use ahrs::Mahony;
+use ahrs::{Ahrs, Mahony};
 use defmt::*;
 use defmt_rtt as _;
 use embassy_executor::Spawner;
@@ -18,8 +18,8 @@ use embassy_time::{Duration, Instant, Ticker, Timer};
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
 use embassy_usb::driver::EndpointError;
 use embassy_usb::{Builder, Config as ConfigUsb, UsbDevice};
-use micromath::vector::F32x3;
 use mpu_9250::{Accelerometer, Gyro, ImuMeasurement, Magnetometer, Mpu9250};
+use nalgebra::Vector3;
 use panic_probe as _;
 use static_cell::StaticCell;
 
@@ -106,15 +106,15 @@ async fn main(spawner: Spawner) {
     // Set calibrated acc offsets values
     // Offsets added to factory offsets
     mpu_9250
-        .set_acc_offsets(F32x3::from((0.35072445, 0.0, -0.1035959))) //y was 0.15323068
+        .set_acc_offsets(Vector3::from([0.35072445, 0.0, -0.1035959])) //y was 0.15323068
         .await
         .unwrap();
 
-    mpu_9250.set_acc_g(F32x3::from((9.821422, 9.8252588, 9.990623)));
+    mpu_9250.set_acc_g(Vector3::from([9.821422, 9.8252588, 9.990623]));
 
     let acc_offsets = mpu_9250.get_acc_offsets().await.unwrap();
-    info!("Accelerometer offsets {}", acc_offsets.to_array());
-    info!("Accelerometer G {}", mpu_9250.get_acc_g().to_array());
+    info!("Accelerometer offsets {}", acc_offsets.as_slice());
+    info!("Accelerometer G {}", mpu_9250.get_acc_g().as_slice(),);
 
     // Set predefined offset data
     // mpu_9250
@@ -123,16 +123,16 @@ async fn main(spawner: Spawner) {
     //     .unwrap();
 
     // Set calibrated mag offsets
-    mpu_9250.set_hard_iron(F32x3::from((25.08522, 28.437236, -58.497048)));
-    mpu_9250.set_soft_iron(F32x3::from((0.9912555, 1.0275499, 0.982864)));
+    mpu_9250.set_hard_iron(Vector3::from([25.08522, 28.437236, -58.497048]));
+    mpu_9250.set_soft_iron(Vector3::from([0.9912555, 1.0275499, 0.982864]));
 
     // mpu_9250.set_hard_iron(F32x3::from((25.981121, 28.045206, -51.997375)));
     // mpu_9250.set_soft_iron(F32x3::from((1.0853868, 1.1138331, 0.8468341)));
 
     let soft_iron = mpu_9250.get_soft_iron();
     let hard_iron = mpu_9250.get_hard_iron();
-    info!("Magnitometer hard iron offsets: {}", hard_iron.to_array());
-    info!("Magnitometer soft iron offsets: {}", soft_iron.to_array());
+    info!("Magnitometer hard iron offsets: {}", hard_iron.as_slice());
+    info!("Magnitometer soft iron offsets: {}", soft_iron.as_slice());
 
     // Initialize IMU
     mpu_9250.init().await.unwrap();
@@ -143,39 +143,39 @@ async fn main(spawner: Spawner) {
     }
 
     // Creaate Mahony data fusion
-    let mut mahony = Mahony::new(1.3, 0.01);
+    let mut mahony = Mahony::new(1e-3, 1.3, 0.01);
 
     let mut ticket = Ticker::every(Duration::from_millis(1)); // 1 kHz
-    let mut now = Instant::now();
+                                                              // let mut now = Instant::now();
     loop {
         let acc = mpu_9250.acc().await.unwrap();
         let gyro = mpu_9250.gyro().await.unwrap() * PI_180;
 
         if mpu_9250.is_mag_ready().await.unwrap() {
             let mag = mpu_9250.mag().await.unwrap();
-            let dt = now.elapsed().as_micros() as f32 / 1_000_000.0;
-            mahony.update(gyro, acc, mag, dt);
-            now = Instant::now();
-            let angle = mahony.quat.to_array();
-            let measurements = ImuMeasurement {
-                acc,
-                gyro,
-                mag,
-                angle,
-            };
-            let _ = CHANNEL.try_send(measurements);
+            // let dt = now.elapsed().as_micros() as f32 / 1_000_000.0;
+            if let Ok(quat) = mahony.update(&gyro, &acc, &mag) {
+                // now = Instant::now();
+                let measurements = ImuMeasurement {
+                    acc,
+                    gyro,
+                    mag,
+                    quat: quat.as_vector().into_owned(),
+                };
+                let _ = CHANNEL.try_send(measurements);
+            }
         } else {
-            let dt = now.elapsed().as_micros() as f32 / 1_000_000.0;
-            mahony.update_imu(gyro, acc, dt);
-            now = Instant::now();
-            let angle = mahony.quat.to_array();
-            let measurements = ImuMeasurement {
-                acc,
-                gyro,
-                mag: F32x3::default(),
-                angle,
-            };
-            let _ = CHANNEL.try_send(measurements);
+            // let dt = now.elapsed().as_micros() as f32 / 1_000_000.0;
+            if let Ok(quat) = mahony.update_imu(&gyro, &acc) {
+                // now = Instant::now();
+                let measurements = ImuMeasurement {
+                    acc,
+                    gyro,
+                    mag: Vector3::default(),
+                    quat: quat.as_vector().into_owned(),
+                };
+                let _ = CHANNEL.try_send(measurements);
+            }
         }
         ticket.next().await;
     }
