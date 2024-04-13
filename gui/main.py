@@ -35,7 +35,12 @@ def update(event):
     global rotation
 
     serial_port.write(b"Give")
-    m = np.frombuffer(serial_port.read(52), dtype=np.float32)
+    m = serial_port.read(52)
+    m = np.frombuffer(m, dtype=np.float32)
+
+    c = serial_port.read(32)
+    c = np.frombuffer(c, dtype=np.uint16)
+    print(c)
 
     sum_acc += m[0:3]
     sum_gyro += np.rad2deg(m[3:6])

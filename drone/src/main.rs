@@ -41,7 +41,8 @@ bind_interrupts!(struct IrqsUart {
 pub const ACC_ADDR: u8 = 0x68;
 pub const MAG_ADDR: u8 = 0x0C;
 
-static USB_CHANNEL: Channel<ThreadModeRawMutex, ImuMeasurement, 1> = Channel::new();
+static MEASUREMENT_CHANNEL: Channel<ThreadModeRawMutex, ImuMeasurement, 1> = Channel::new();
+static CONTROL_CHANNEL: Channel<ThreadModeRawMutex, [u16; 16], 1> = Channel::new();
 
 static DEVICE_DESCRIPTOR: StaticCell<[u8; 256]> = StaticCell::new();
 static CONFIG_DESCRIPTOR: StaticCell<[u8; 256]> = StaticCell::new();
@@ -177,7 +178,7 @@ async fn main(spawner: Spawner) -> ! {
                     mag,
                     quat: quat.as_vector().into_owned(),
                 };
-                let _ = USB_CHANNEL.try_send(measurements);
+                let _ = MEASUREMENT_CHANNEL.try_send(measurements);
             }
         } else {
             // let dt = now.elapsed().as_micros() as f32 / 1_000_000.0;
@@ -189,7 +190,7 @@ async fn main(spawner: Spawner) -> ! {
                     mag: Vector3::default(),
                     quat: quat.as_vector().into_owned(),
                 };
-                let _ = USB_CHANNEL.try_send(measurements);
+                let _ = MEASUREMENT_CHANNEL.try_send(measurements);
             }
         }
         ticket.next().await;
@@ -217,17 +218,20 @@ async fn send_measurements_usb_task(mut class: CdcAcmClass<'static, Driver<'stat
 #[embassy_executor::task]
 async fn rc_commands(mut rx: UartRx<'static, UART0, AsyncUart>) {
     info!("Receiving rc commands...");
+    let mut ticket = Ticker::every(Duration::from_millis(1)); // 1 kHz
+    let mut buf = [0; 64];
+    let mut parser = PacketParser::<64>::new();
+
     loop {
-        let mut buf = [0; 64];
         match rx.read(&mut buf).await {
             Ok(()) => {
-                let mut parser = PacketParser::<64>::new();
                 parser.push_bytes(&buf);
                 while let Some(Ok((_, packet))) = parser.next_packet() {
                     match packet {
                         Packet::LinkStatistics(_link_statistics) => {}
                         Packet::RcChannels(RcChannels(channels)) => {
-                            info!("Channels: {:?}", channels);
+                            // info!("Channels: {:?}", channels);
+                            let _ = CONTROL_CHANNEL.try_send(channels);
                         }
                         _ => {}
                     }
@@ -235,6 +239,7 @@ async fn rc_commands(mut rx: UartRx<'static, UART0, AsyncUart>) {
             }
             Err(err) => info!("Error:{:?}", err),
         }
+        ticket.next().await;
     }
 }
 
@@ -258,10 +263,17 @@ async fn send_measurements<'d, T: Instance + 'd>(
         serial.read_packet(&mut buf).await?;
 
         // Wait for measurements from sensor
-        let measurement = USB_CHANNEL.receive().await;
+        let measurement = MEASUREMENT_CHANNEL.receive().await;
+        let controls = CONTROL_CHANNEL.receive().await;
 
         // Send measurements over serial port
-        let data: [u8; 52] = measurement.into();
-        serial.write_packet(&data).await?;
+        let measurements: [u8; 52] = measurement.into();
+        serial.write_packet(&measurements).await?;
+
+        // Send controls over serial port
+        unsafe {
+            let (_, controls, _) = controls.align_to::<u8>();
+            serial.write_packet(controls).await?;
+        }
     }
 }
