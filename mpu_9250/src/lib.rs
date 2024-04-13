@@ -4,7 +4,7 @@
 #![allow(async_fn_in_trait)]
 
 use defmt::info;
-use embassy_rp::i2c::{self, Error, Instance, Mode};
+use embassy_rp::i2c::{self, Error as I2CError, Instance, Mode};
 use embassy_time::{Duration, Ticker, Timer};
 use embedded_hal_async::i2c::I2c;
 use nalgebra::{Vector3, Vector4};
@@ -17,19 +17,19 @@ const CALLIBRATION_SAMPLES: u16 = 2000;
 const CALLIBRATION_MAG_SAMPLES: u16 = 6000;
 
 pub trait Accelerometer {
-    async fn acc(&mut self) -> Result<Vector3<f32>, Error>;
+    async fn acc(&mut self) -> Result<Vector3<f32>, I2CError>;
 }
 
 pub trait Gyro {
-    async fn gyro(&mut self) -> Result<Vector3<f32>, Error>;
+    async fn gyro(&mut self) -> Result<Vector3<f32>, I2CError>;
 }
 
 pub trait Magnetometer {
-    async fn mag(&mut self) -> Result<Vector3<f32>, Error>;
-    async fn is_mag_ready(&mut self) -> Result<bool, Error>;
+    async fn mag(&mut self) -> Result<Vector3<f32>, I2CError>;
+    async fn is_mag_ready(&mut self) -> Result<bool, I2CError>;
 }
 pub trait Barometer {
-    async fn baro(&mut self) -> Result<f32, Error>;
+    async fn baro(&mut self) -> Result<f32, I2CError>;
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -102,7 +102,7 @@ where
         }
     }
 
-    pub async fn init(&mut self) -> Result<(), Error> {
+    pub async fn init(&mut self) -> Result<(), I2CError> {
         // Low pass filter 5 Hz
         self.set_low_pass_filter(GyroDlpf::Hz5).await?;
 
@@ -130,7 +130,7 @@ where
         Ok(())
     }
 
-    pub async fn calibrate_gyro(&mut self) -> Result<Vector3<f32>, Error> {
+    pub async fn calibrate_gyro(&mut self) -> Result<Vector3<f32>, I2CError> {
         // Prepare device for calibration
         // Low pass filter 184 Hz
         self.set_low_pass_filter(GyroDlpf::Hz184).await?;
@@ -158,7 +158,9 @@ where
         Ok(gyro)
     }
 
-    pub async fn calibrate_acc_6_point(&mut self) -> Result<(Vector3<f32>, Vector3<f32>), Error> {
+    pub async fn calibrate_acc_6_point(
+        &mut self,
+    ) -> Result<(Vector3<f32>, Vector3<f32>), I2CError> {
         // Prepare device for calibration
         // Low pass filter 184 Hz
         self.set_low_pass_filter(GyroDlpf::Hz184).await?;
@@ -229,7 +231,7 @@ where
         Ok((acc_offset, acc_g))
     }
 
-    pub async fn calibrate_mag(&mut self) -> Result<(Vector3<f32>, Vector3<f32>), Error> {
+    pub async fn calibrate_mag(&mut self) -> Result<(Vector3<f32>, Vector3<f32>), I2CError> {
         info!("Calibrating magnitometer...");
         // Bypass mode
         self.enable_bypass().await?;
@@ -284,7 +286,7 @@ where
         Ok((offset, scale))
     }
 
-    async fn collect_acc(&mut self) -> Result<Vector3<f32>, Error> {
+    async fn collect_acc(&mut self) -> Result<Vector3<f32>, I2CError> {
         let mut acc = Vector3::default();
 
         let mut timer = Ticker::every(Duration::from_millis(1));
@@ -302,11 +304,11 @@ impl<'d, T> Mpu9250<'d, T, i2c::Async>
 where
     T: Instance,
 {
-    pub async fn read(&mut self, addr: u8, data: &[u8], buffer: &mut [u8]) -> Result<(), Error> {
+    pub async fn read(&mut self, addr: u8, data: &[u8], buffer: &mut [u8]) -> Result<(), I2CError> {
         Ok(self.i2c.write_read(addr, data, buffer).await?)
     }
 
-    pub async fn write(&mut self, addr: u8, data: &[u8]) -> Result<(), Error> {
+    pub async fn write(&mut self, addr: u8, data: &[u8]) -> Result<(), I2CError> {
         Ok(self.i2c.write(addr, data).await?)
     }
 }
@@ -315,7 +317,7 @@ impl<'d, T> Mpu9250<'d, T, i2c::Async>
 where
     T: Instance,
 {
-    pub async fn reset(&mut self) -> Result<(), Error> {
+    pub async fn reset(&mut self) -> Result<(), I2CError> {
         self.write(
             ACC_ADDR,
             &[Mpu9250Reg::PwrMgmt1.addr(), RegPwrMgmt1::Hreset.mask()],
@@ -324,9 +326,9 @@ where
         Ok(())
     }
 
-    pub async fn set_sample_rate(&mut self, rate: u16) -> Result<(), Error> {
+    pub async fn set_sample_rate(&mut self, rate: u16) -> Result<(), I2CError> {
         if rate > 1000 || rate < 4 {
-            panic!("Error: Invalid sample rate.");
+            panic!("I2CError: Invalid sample rate.");
         }
 
         // Derived from: Sample Rate = Internal Sample Rate / (1 + SMPLRT_DIV)
@@ -337,7 +339,7 @@ where
         Ok(())
     }
 
-    pub async fn enable_bypass(&mut self) -> Result<(), Error> {
+    pub async fn enable_bypass(&mut self) -> Result<(), I2CError> {
         //Reset gyro
         self.write(ACC_ADDR, &[Mpu9250Reg::UserCtrl.addr(), 0])
             .await?;
@@ -355,13 +357,13 @@ where
         Ok(())
     }
 
-    pub async fn set_low_pass_filter(&mut self, level: GyroDlpf) -> Result<(), Error> {
+    pub async fn set_low_pass_filter(&mut self, level: GyroDlpf) -> Result<(), I2CError> {
         self.write(ACC_ADDR, &[Mpu9250Reg::Config.addr(), level as u8])
             .await?;
         Ok(())
     }
 
-    pub async fn set_accel_range(&mut self, acc_range: AccelRange) -> Result<(), Error> {
+    pub async fn set_accel_range(&mut self, acc_range: AccelRange) -> Result<(), I2CError> {
         let accel_config_byte: u8 = match acc_range {
             AccelRange::G2 => 0,
             AccelRange::G4 => 1,
@@ -377,7 +379,7 @@ where
         Ok(())
     }
 
-    pub async fn set_gyro_range(&mut self, gyro_range: GyroRange) -> Result<(), Error> {
+    pub async fn set_gyro_range(&mut self, gyro_range: GyroRange) -> Result<(), I2CError> {
         let gyro_config_byte: u8 = match gyro_range {
             GyroRange::Dps250 => 0,
             GyroRange::Dps500 => 1,
@@ -390,7 +392,7 @@ where
         Ok(())
     }
 
-    pub async fn read_sensitivity_adjustment(&mut self) -> Result<Vector3<f32>, Error> {
+    pub async fn read_sensitivity_adjustment(&mut self) -> Result<Vector3<f32>, I2CError> {
         // Power down mag before mode switch
         self.write(
             MAG_ADDR,
@@ -425,7 +427,7 @@ where
         &mut self,
         sample_rate: SampleRate,
         sensitivity: Sensitivity,
-    ) -> Result<(), Error> {
+    ) -> Result<(), I2CError> {
         let mut cntl1_byte = 0u8;
 
         match sensitivity {
@@ -452,7 +454,7 @@ where
         Ok(())
     }
 
-    pub async fn check(&mut self) -> Result<bool, Error> {
+    pub async fn check(&mut self) -> Result<bool, I2CError> {
         let mut buffer = [0u8; 2];
         self.read(ACC_ADDR, &[0x75], &mut buffer[0..1]).await?;
 
@@ -461,7 +463,7 @@ where
         Ok(buffer[0] == 0x71 && buffer[1] == 0x48)
     }
 
-    pub async fn set_gyro_offsets(&mut self, offsets: Vector3<f32>) -> Result<(), Error> {
+    pub async fn set_gyro_offsets(&mut self, offsets: Vector3<f32>) -> Result<(), I2CError> {
         // Divide by 4 to get 32.9 LSB per deg/s to conform to expected bias
         // input format.
         // Biases are additive, so change sign on
@@ -488,7 +490,7 @@ where
         Ok(())
     }
 
-    pub async fn get_unscaled_gyro_offsets(&mut self) -> Result<Vector3<i16>, Error> {
+    pub async fn get_unscaled_gyro_offsets(&mut self) -> Result<Vector3<i16>, I2CError> {
         let mut gyro = [0u8; 6];
 
         self.read(ACC_ADDR, &[Mpu9250Reg::XgOffsetH.addr()], &mut gyro)
@@ -504,7 +506,7 @@ where
         Ok(Vector3::from([x_gyro, y_gyro, z_gyro]))
     }
 
-    pub async fn get_unscaled_acc_offsets(&mut self) -> Result<Vector3<i16>, Error> {
+    pub async fn get_unscaled_acc_offsets(&mut self) -> Result<Vector3<i16>, I2CError> {
         let mut acc = [0u8; 6];
 
         self.read(ACC_ADDR, &[Mpu9250Reg::XaOffsetH.addr()], &mut acc)
@@ -517,7 +519,7 @@ where
         Ok(Vector3::from([x_acc, y_acc, z_acc]))
     }
 
-    pub async fn get_acc_offsets(&mut self) -> Result<Vector3<f32>, Error> {
+    pub async fn get_acc_offsets(&mut self) -> Result<Vector3<f32>, I2CError> {
         let offsets = Vector3::from(self.get_unscaled_acc_offsets().await?);
         let scale = self.acc_g * AccelRange::G16.get_sensitivity_g(); //self.acc_range.get_sensitivity_g();
 
@@ -528,7 +530,7 @@ where
         Ok(Vector3::from([x, y, z]))
     }
 
-    pub async fn set_acc_offsets(&mut self, offsets: Vector3<f32>) -> Result<(), Error> {
+    pub async fn set_acc_offsets(&mut self, offsets: Vector3<f32>) -> Result<(), I2CError> {
         let factory = self.get_unscaled_acc_offsets().await?;
         let scale = self.acc_g * AccelRange::G16.get_sensitivity_g();
 
@@ -586,7 +588,7 @@ impl<'d, T> Accelerometer for Mpu9250<'d, T, i2c::Async>
 where
     T: Instance,
 {
-    async fn acc(&mut self) -> Result<Vector3<f32>, Error> {
+    async fn acc(&mut self) -> Result<Vector3<f32>, I2CError> {
         let mut acc = [0u8; 6];
 
         self.read(ACC_ADDR, &[Mpu9250Reg::AccelXoutH.addr()], &mut acc)
@@ -611,7 +613,7 @@ impl<'d, T> Gyro for Mpu9250<'d, T, i2c::Async>
 where
     T: Instance,
 {
-    async fn gyro(&mut self) -> Result<Vector3<f32>, Error> {
+    async fn gyro(&mut self) -> Result<Vector3<f32>, I2CError> {
         let mut gyro = [0u8; 6];
 
         // Gyro X low
@@ -638,7 +640,7 @@ impl<'d, T> Magnetometer for Mpu9250<'d, T, i2c::Async>
 where
     T: Instance,
 {
-    async fn mag(&mut self) -> Result<Vector3<f32>, Error> {
+    async fn mag(&mut self) -> Result<Vector3<f32>, I2CError> {
         let mut mag = [0u8; 6];
 
         // Mag X low
@@ -668,7 +670,7 @@ where
         Ok(Vector3::from([y_mag, x_mag, -z_mag]))
     }
 
-    async fn is_mag_ready(&mut self) -> Result<bool, Error> {
+    async fn is_mag_ready(&mut self) -> Result<bool, I2CError> {
         // Check if new measurements are ready to read
         // [0] - Data ready [1] - Data Overrun
         let mut buffer = [0u8];

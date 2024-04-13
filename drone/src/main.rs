@@ -8,9 +8,11 @@ use defmt::*;
 use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_rp::bind_interrupts;
-use embassy_rp::i2c::{self, Async, Config as ConfigI2c, InterruptHandler as InterruptHandlerI2c};
-use embassy_rp::peripherals::I2C0;
-use embassy_rp::peripherals::USB;
+use embassy_rp::i2c::{
+    self, Async as AsyncI2C, Config as ConfigI2c, InterruptHandler as InterruptHandlerI2c,
+};
+use embassy_rp::peripherals::{I2C0, UART0, USB};
+use embassy_rp::uart::{Async as AsyncUart, Config, InterruptHandler, UartRx};
 use embassy_rp::usb::{Driver, Instance, InterruptHandler as InterruptHandlerUsb};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::channel::Channel;
@@ -31,10 +33,14 @@ bind_interrupts!(struct IrqsUsb {
     USBCTRL_IRQ => InterruptHandlerUsb<USB>;
 });
 
+bind_interrupts!(struct IrqsUart {
+    UART0_IRQ => InterruptHandler<UART0>;
+});
+
 pub const ACC_ADDR: u8 = 0x68;
 pub const MAG_ADDR: u8 = 0x0C;
 
-static CHANNEL: Channel<ThreadModeRawMutex, ImuMeasurement, 1> = Channel::new();
+static USB_CHANNEL: Channel<ThreadModeRawMutex, ImuMeasurement, 1> = Channel::new();
 
 static DEVICE_DESCRIPTOR: StaticCell<[u8; 256]> = StaticCell::new();
 static CONFIG_DESCRIPTOR: StaticCell<[u8; 256]> = StaticCell::new();
@@ -46,7 +52,7 @@ static STATE: StaticCell<State<'_>> = StaticCell::new();
 const PI_180: f32 = core::f32::consts::PI / 180.0;
 
 #[embassy_executor::main]
-async fn main(spawner: Spawner) {
+async fn main(spawner: Spawner) -> ! {
     let p = embassy_rp::init(Default::default());
     let driver = Driver::new(p.USB, IrqsUsb);
 
@@ -84,11 +90,19 @@ async fn main(spawner: Spawner) {
     unwrap!(spawner.spawn(usb_task(usb)));
     unwrap!(spawner.spawn(send_measurements_usb_task(class)));
 
-    let sda = p.PIN_16;
-    let scl = p.PIN_17;
+    // RC uart
+    let mut config = Config::default();
+    config.baudrate = 400000;
+
+    let uart_rx = UartRx::new(p.UART0, p.PIN_17, IrqsUart, p.DMA_CH1, config);
+    unwrap!(spawner.spawn(rc_commands(uart_rx)));
+
+    // MPU sensor
+    let sda = p.PIN_20;
+    let scl = p.PIN_21;
     let mut conf = ConfigI2c::default();
     conf.frequency = 1_000_000;
-    let sensor: i2c::I2c<'_, I2C0, Async> = i2c::I2c::new_async(p.I2C0, scl, sda, IrqsI2c, conf);
+    let sensor: i2c::I2c<'_, I2C0, AsyncI2C> = i2c::I2c::new_async(p.I2C0, scl, sda, IrqsI2c, conf);
 
     let mut mpu_9250 = Mpu9250::new_async(sensor);
 
@@ -162,7 +176,7 @@ async fn main(spawner: Spawner) {
                     mag,
                     quat: quat.as_vector().into_owned(),
                 };
-                let _ = CHANNEL.try_send(measurements);
+                let _ = USB_CHANNEL.try_send(measurements);
             }
         } else {
             // let dt = now.elapsed().as_micros() as f32 / 1_000_000.0;
@@ -174,7 +188,7 @@ async fn main(spawner: Spawner) {
                     mag: Vector3::default(),
                     quat: quat.as_vector().into_owned(),
                 };
-                let _ = CHANNEL.try_send(measurements);
+                let _ = USB_CHANNEL.try_send(measurements);
             }
         }
         ticket.next().await;
@@ -199,6 +213,19 @@ async fn send_measurements_usb_task(mut class: CdcAcmClass<'static, Driver<'stat
     }
 }
 
+#[embassy_executor::task]
+async fn rc_commands(mut rx: UartRx<'static, UART0, AsyncUart>) {
+    info!("Receiving rc commands...");
+    loop {
+        // read a total of 4 transmissions (32 / 8) and then print the result
+        let mut buf = [0; 64];
+        match rx.read(&mut buf).await {
+            Ok(()) => info!("RX {:?}", buf),
+            Err(err) => info!("Error:{:?}", err),
+        }
+    }
+}
+
 struct Disconnected {}
 
 impl From<EndpointError> for Disconnected {
@@ -219,7 +246,7 @@ async fn send_measurements<'d, T: Instance + 'd>(
         serial.read_packet(&mut buf).await?;
 
         // Wait for measurements from sensor
-        let measurement = CHANNEL.receive().await;
+        let measurement = USB_CHANNEL.receive().await;
 
         // Send measurements over serial port
         let data: [u8; 52] = measurement.into();
