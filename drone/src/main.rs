@@ -4,6 +4,7 @@
 #![feature(slice_flatten)]
 
 use ahrs::{Ahrs, Mahony};
+use crsf::{Packet, PacketParser, RcChannels};
 use defmt::*;
 use defmt_rtt as _;
 use embassy_executor::Spawner;
@@ -217,10 +218,21 @@ async fn send_measurements_usb_task(mut class: CdcAcmClass<'static, Driver<'stat
 async fn rc_commands(mut rx: UartRx<'static, UART0, AsyncUart>) {
     info!("Receiving rc commands...");
     loop {
-        // read a total of 4 transmissions (32 / 8) and then print the result
         let mut buf = [0; 64];
         match rx.read(&mut buf).await {
-            Ok(()) => info!("RX {:?}", buf),
+            Ok(()) => {
+                let mut parser = PacketParser::<64>::new();
+                parser.push_bytes(&buf);
+                while let Some(Ok((_, packet))) = parser.next_packet() {
+                    match packet {
+                        Packet::LinkStatistics(_link_statistics) => {}
+                        Packet::RcChannels(RcChannels(channels)) => {
+                            info!("Channels: {:?}", channels);
+                        }
+                        _ => {}
+                    }
+                }
+            }
             Err(err) => info!("Error:{:?}", err),
         }
     }

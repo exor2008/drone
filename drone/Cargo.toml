@@ -43,6 +43,7 @@ portable-atomic = { version = "1.6.0", features = ["critical-section"] }
 mpu_9250 = {path = "../mpu_9250" }
 ahrs = {version = "0.6.0", default-features = false}
 nalgebra = {version = "0.31.4", default-features = false}
+crsf = "2.0.0"
 
 [profile.dev]
 debug = 2
