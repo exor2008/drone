@@ -22,6 +22,8 @@ sum_acc = np.zeros(3)
 quat = np.asarray([1.0, 0.0, 0.0, 0.0])
 quat_ar = np.asarray([1.0, 0.0, 0.0, 0.0])
 cube = None
+control_1 = None
+control_2 = None
 mag_markers = None
 mag_raw = []
 
@@ -40,7 +42,6 @@ def update(event):
 
     c = serial_port.read(32)
     c = np.frombuffer(c, dtype=np.uint16)
-    print(c)
 
     sum_acc += m[0:3]
     sum_gyro += np.rad2deg(m[3:6])
@@ -78,9 +79,10 @@ def update(event):
     # w, x, y, z
     quat = Quaternion(m[12], *m[9:12], False).conjugate()
 
-    # print(quat)
-
     rotate_cube(cube, quat)
+
+    shift_control(control_2, c[2], c[0])
+    shift_control(control_1, c[1], c[3])
 
     if m[6:9].any():
         mag_raw.append(m[6:9])
@@ -172,6 +174,34 @@ def get_position_view(grid, row, col):
     return cube
 
 
+def get_control_view(grid, row, col):
+    view = grid.add_view(
+        row=row,
+        col=col,
+        border_color="black",
+        bgcolor=BGCOLOR,
+    )
+    view.camera = "turntable"
+    view.camera.azimuth = 90.0
+    view.camera.elevation = 90.0
+    view.camera.fov = 0
+    view.camera.scale_factor = 2.3
+
+    scene.Rectangle(
+        center=[0, 0],
+        color=(0, 0, 0, 0),
+        border_color=(1.0, 1.0, 1.0, 1.0),
+        parent=view.scene,
+        height=2,
+        width=2,
+    )
+
+    s = scene.Sphere(0.2, parent=view.scene, color=(0.4, 0.1, 0.1))
+    s.transform = transforms.STTransform(translate=[0, 0, 1])
+
+    return s
+
+
 def titles():
     scene.visuals.Text(
         "Accelerometer",
@@ -207,7 +237,7 @@ def titles():
     )
 
     scene.visuals.Text(
-        "3D",
+        "Control 1",
         pos=(10, 360),
         color="white",
         font_size=12,
@@ -218,8 +248,30 @@ def titles():
     )
 
     scene.visuals.Text(
-        "3D Magnitometer",
+        "Control 2",
         pos=(800, 360),
+        color="white",
+        font_size=12,
+        bold=False,
+        anchor_x="left",
+        anchor_y="bottom",
+        parent=canvas.scene,
+    )
+
+    scene.visuals.Text(
+        "3D",
+        pos=(10, 480),
+        color="white",
+        font_size=12,
+        bold=False,
+        anchor_x="left",
+        anchor_y="bottom",
+        parent=canvas.scene,
+    )
+
+    scene.visuals.Text(
+        "3D Magnitometer",
+        pos=(800, 480),
         color="white",
         font_size=12,
         bold=False,
@@ -249,6 +301,13 @@ def rotate_cube(cube, quat):
     cube.transform.matrix = quat.get_matrix()
 
 
+def shift_control(control, shift_x, shift_y):
+    shift_x = ((shift_x - 180) / (1800 - 180) - 0.5) * 2
+    shift_y = ((shift_y - 180) / (1800 - 180) - 0.5) * 2
+
+    control.transform.translate = [-shift_x, shift_y, 1]
+
+
 if __name__ == "__main__":
     canvas = scene.SceneCanvas(keys="interactive", show=True, fullscreen=False)
     grid = canvas.central_widget.add_grid()
@@ -257,7 +316,10 @@ if __name__ == "__main__":
     gyro = get_plot_view(grid, 1, 0, GYRO_CAMERA_VIEW, [0, 100, 200])
     mag = get_plot_view(grid, 2, 0, MAG_CAMERA_VIEW, [0, 0, 0])
     cube = get_position_view(grid, 3, 0)
+
     mag_markers = get_magnitometer_view(grid, 3, 1)
+    control_1 = get_control_view(grid, 4, 0)
+    control_2 = get_control_view(grid, 4, 1)
     titles()
 
     timer = app.Timer("auto", connect=update, start=True)
