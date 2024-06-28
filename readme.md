@@ -1,4 +1,4 @@
-### Drone
+# Drone
 
 The flight control firmware based on RP PI Pico and async embedded Rust.
 
